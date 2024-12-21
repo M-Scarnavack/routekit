@@ -1,15 +1,19 @@
+# main.py
+
 import csv
 from datetime import datetime, timedelta
 from hash_table import HashTable
 from truck import Truck
 from package import Package
 
-# Global data
+# Global data lists
 distance_data = []
 address_data = []
 
-# 1) Distance data
 def load_distance_data(file_path):
+    """
+    Reads the distance CSV into distance_data as a 2D list of floats.
+    """
     global distance_data
     with open(file_path, 'r') as f:
         reader = csv.reader(f)
@@ -18,20 +22,25 @@ def load_distance_data(file_path):
             for row in reader
         ]
 
-# 2) Address data
 def load_address_data(file_path):
+    """
+    Reads the address CSV into address_data as a list of rows.
+    """
     global address_data
     with open(file_path, 'r') as f:
         reader = csv.reader(f)
         address_data = [row for row in reader]
 
-# 3) Package data
 def load_package_data(file_path, package_hash_table):
+    """
+    Reads package data from CSV and populates the hash table with Package objects.
+    Adjust the indexes if CSV columns differ.
+    """
     with open(file_path, 'r') as f:
         reader = csv.reader(f)
-        next(reader)  # skip header row if your CSV has one
+        next(reader)  # Skip header row if your CSV has one
         for row in reader:
-            # Adjust these indices if your CSV columns differ
+            # Update these based on your CSV layout
             package_id = int(row[0])
             address = row[1]
             city = row[2]
@@ -54,28 +63,30 @@ def load_package_data(file_path, package_hash_table):
             )
             package_hash_table.insert(package_id, package_obj)
 
-# Get symmetrical distance
 def get_distance(loc1, loc2):
+    """
+    Returns the distance between two locations using the 2D distance_data array.
+    Handles zeros by swapping indices as needed.
+    """
     dist = distance_data[loc1][loc2]
     if dist == 0.0:
         dist = distance_data[loc2][loc1]
     return dist
 
-# Convert address -> index
 def get_address_index(address):
+    """
+    Converts an address string to its row index in address_data.
+    Make sure you're checking the correct column for the address text.
+    """
     for i, row in enumerate(address_data):
-        # adjust if row[2] is your actual address field
         if address in row[2]:
             return i
     return -1
 
-# Compute package status
 def compute_package_status(package, current_time):
     """
-    Return:
-      - 'At Hub' if current_time < departure_time
-      - 'Delivered at ...' if current_time >= delivery_time
-      - 'En Route' otherwise
+    Determines whether a package is 'At Hub', 'Delivered at ...', or 'En Route'
+    by comparing current_time to the package's departure and delivery times.
     """
     if not package.departure_time or current_time < package.departure_time:
         return "At Hub"
@@ -84,8 +95,11 @@ def compute_package_status(package, current_time):
     else:
         return "En Route"
 
-# --- The key function: correct_package_9_address ONLY if user-queried time >= 10:20
 def correct_package_9_address(package_hash_table, current_time):
+    """
+    Updates package #9's address only if the user-specified time is on or after 10:20 AM.
+    This simulates not knowing the correct address until 10:20.
+    """
     fix_time = datetime(2024, 12, 12, 10, 20, 0)
     if current_time >= fix_time:
         pkg9 = package_hash_table.lookup(9)
@@ -94,16 +108,20 @@ def correct_package_9_address(package_hash_table, current_time):
             pkg9.city = "Salt Lake City"
             pkg9.state = "UT"
             pkg9.zip_code = "84111"
-            # We do NOT print anything here to avoid “spoiling” the address early.
-            # But you could do: print("Corrected #9’s address at or after 10:20.")
 
 def parse_time_input():
+    """
+    Prompts user for a time in HH:MM:SS format and returns a datetime on 2024-12-12.
+    """
     user_time = input("Enter time (HH:MM:SS): ")
     (h, m, s) = user_time.split(":")
     return datetime(2024, 12, 12, int(h), int(m), int(s))
 
-# --- Delivery function
 def deliver_packages(truck):
+    """
+    Implements a nearest-neighbor approach for package delivery.
+    Each delivery updates the truck's clock and the package's times.
+    """
     current_location = 0
     while truck.packages:
         try:
@@ -127,28 +145,26 @@ def deliver_packages(truck):
             next_package.status = f"Delivered at {delivery_time}"
 
             package_hash_table.insert(next_package.package_id, next_package)
-
             current_location = get_address_index(next_package.address)
 
         except Exception as e:
             print(f"Error delivering package on truck {truck.truck_id}: {e}")
             break
 
-# Create global hash table
+# Create hash table
 package_hash_table = HashTable()
 
-# Load data
+# Load files
 load_distance_data("data/Distance.csv")
 load_address_data("data/Address.csv")
 load_package_data("data/Package.csv", package_hash_table)
 
-# Trucks
+# Set up 3 trucks starting at 8:00 AM
 truck1 = Truck(1, 18, 0.0, datetime(2024,12,12,8,0,0))
 truck2 = Truck(2, 18, 0.0, datetime(2024,12,12,8,0,0))
 truck3 = Truck(3, 18, 0.0, datetime(2024,12,12,8,0,0))
 
-# --- MULTI-WAVE so #9 is not delivered before 10:20.
-#     EXCLUDE #9 from wave 1 loads
+# Wave 1: Exclude package #9 so it isn't delivered too soon.
 truck1.packages = [
     package_hash_table.lookup(i)
     for i in range(1,17)
@@ -165,23 +181,16 @@ truck3.packages = [
     if i != 9 and package_hash_table.lookup(i)
 ]
 
-# Wave 1
+# Deliver the first wave
 deliver_packages(truck1)
 deliver_packages(truck2)
 deliver_packages(truck3)
 
-# Now wave 1 is done. We STILL have not corrected #9's address in code. #9 is "At Hub" with the old/wrong address.
-# The earliest we physically can deliver #9 is after 10:20, so let's set truck3 to depart after 10:20
+# Force truck3 to wait until 10:20 or later before delivering #9
 truck3.current_time = max(truck3.current_time, datetime(2024,12,12,10,20,0))
-
-# Also, if you prefer, you can skip these lines until you actually do "Option #2" or "Option #1" after 10:20
-# But let's physically pick up #9 now for wave 2:
-pkg9 = package_hash_table.lookup(9)  # still old address in memory
-truck3.packages = [pkg9]  # only #9
+pkg9 = package_hash_table.lookup(9)
+truck3.packages = [pkg9]  # Only package #9
 deliver_packages(truck3)
-
-# *** We have NOT forced #9’s address in code. The user interface will correct it if query_time >= 10:20. ***
-
 
 def main():
     print("WGUPS Routing Program")
@@ -197,8 +206,6 @@ def main():
             try:
                 package_id = int(input("Enter package ID: "))
                 query_time = parse_time_input()
-
-                # IMPORTANT: Only correct #9’s address if user_time >= 10:20
                 correct_package_9_address(package_hash_table, query_time)
 
                 pkg = package_hash_table.lookup(package_id)
@@ -216,15 +223,12 @@ def main():
                     )
                 else:
                     print(f"Package ID {package_id} not found.")
-
             except Exception as e:
                 print(f"Error: {e}")
 
         elif choice == "2":
             try:
                 query_time = parse_time_input()
-
-                # correct #9 if it's after 10:20
                 correct_package_9_address(package_hash_table, query_time)
 
                 for pid in range(1, 41):
@@ -241,7 +245,6 @@ def main():
                             f"Weight: {p.weight} lbs, "
                             f"Status: {status}"
                         )
-
             except Exception as e:
                 print(f"Error: {e}")
 
