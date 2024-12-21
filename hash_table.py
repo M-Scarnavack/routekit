@@ -1,36 +1,54 @@
+# hash_table.py
+
 class HashTable:
-    def __init__(self, size=40):
-        """Initialize the hash table with empty buckets."""
-        self.size = size
-        self.table = [[] for _ in range(size)]
+    def __init__(self, initial_capacity=20):
+        """
+        Initialize the hash table with empty buckets.
+        Each bucket is a list of [key, value] pairs.
+        """
+        self.table = [[] for _ in range(initial_capacity)]
 
-    def _hash(self, key):
-        """Hash function to calculate bucket index."""
-        return key % self.size
+    def insert(self, key, value):
+        """
+        Insert or update a key-value pair in the hash table.
+        :param key: The key to insert.
+        :param value: The value to be stored, e.g. a Package object.
+        """
+        bucket_index = hash(key) % len(self.table)
+        bucket = self.table[bucket_index]
 
-    def insert(self, package_id, package):
-        """Insert a package object into the hash table."""
-        index = self._hash(package_id)
-        for item in self.table[index]:
-            if item[0] == package_id:
-                item[1] = package
-                return
-        self.table[index].append([package_id, package])
+        # If the key exists, update it
+        for pair in bucket:
+            if pair[0] == key:
+                pair[1] = value
+                return True
 
-    def lookup(self, package_id):
-        """Look up a package by its ID."""
-        index = self._hash(package_id)
-        for item in self.table[index]:
-            if item[0] == package_id:
-                return item[1]
-        print(f"Warning: Package ID {package_id} not found in the hash table.")
+        # Otherwise, insert a new [key, value] pair
+        bucket.append([key, value])
+        return True
+
+    def lookup(self, key):
+        """
+        Return the value associated with the key, or None if not found.
+        """
+        bucket_index = hash(key) % len(self.table)
+        bucket = self.table[bucket_index]
+
+        for pair in bucket:
+            if pair[0] == key:
+                return pair[1]
         return None
 
-    def remove(self, package_id):
-        """Remove a package from the hash table."""
-        index = self._hash(package_id)
-        for item in self.table[index]:
-            if item[0] == package_id:
-                self.table[index].remove(item)
+    def remove(self, key):
+        """
+        Remove a key-value pair by key. Returns True if successful, else False.
+        """
+        bucket_index = hash(key) % len(self.table)
+        bucket = self.table[bucket_index]
+
+        for pair in bucket:
+            if pair[0] == key:
+                bucket.remove(pair)
                 return True
         return False
+
