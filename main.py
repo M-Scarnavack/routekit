@@ -154,9 +154,13 @@ def deliver_packages(truck):
             print(f"Error delivering package on truck {truck.truck_id}: {e}")
             break
 
-# Run deliveries for each truck
-for t in [truck1, truck2, truck3]:
-    deliver_packages(t)
+# Wave 1: Truck 1 and Truck 2 deliver
+deliver_packages(truck1)
+deliver_packages(truck2)
+
+# Wave 2: Truck 3 can only depart once a driver is back
+truck3.current_time = min(truck1.current_time, truck2.current_time)
+deliver_packages(truck3)
 
 # ----------------------------------------------------------------------------
 # POST-PROCESS FIX FOR PACKAGE #9:
