@@ -52,3 +52,16 @@ def test_cli_html_fleet(tmp_path):
     assert len(data["tracks"]) == 2
     assert sum(len(t["stops"]) for t in data["tracks"]) == 4
     assert all(any(d.startswith("Arrives") for d in s["details"]) for t in data["tracks"] for s in t["stops"])
+
+
+def test_basemap_works_from_a_local_file(tmp_path):
+    """OSM's tile servers block pages without a Referer (any file:// page), so we must not use them."""
+    out = tmp_path / "m.html"
+    write_html(out, "t", "s", (41.0, -87.0), "Depot", [], basemap="gray")
+    page = out.read_text()
+    assert "tile.openstreetmap.org" not in page
+    data = _data(page)
+    assert data["basemap"] == "gray" and set(data["basemaps"]) == {"streets", "gray", "topo"}
+    assert all(b["url"].startswith("https://server.arcgisonline.com/") for b in data["basemaps"].values())
+    assert "OpenStreetMap" in data["attribution"] and "Esri" in data["attribution"]
+    assert 'id="notice"' in page  # a visible message if tiles fail

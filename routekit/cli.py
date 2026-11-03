@@ -864,7 +864,8 @@ def freight(args, console: Console) -> int:
                    overlays=overlays,
                    footnote="Freight Analysis Framework (FAF5.7.1, BTS/FHWA): annual truck tonnage, not live loads. "
                             "Darker states move more freight; line thickness is lane tonnage.",
-                   view=((24.5, -125.0), (49.5, -66.5)))  # lower 48; Alaska and Hawaii are a pan away
+                   view=((24.5, -125.0), (49.5, -66.5)),  # lower 48; Alaska and Hawaii are a pan away
+                   basemap="gray")  # a quiet background so the heat shading reads clearly
         console.print(f"[green]Saved freight map to {args.html}[/green]")
     return 0
 

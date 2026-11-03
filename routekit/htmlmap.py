@@ -1,8 +1,13 @@
 """Interactive HTML map export (``routekit plan ... --html map.html``).
 
 Writes one self-contained HTML file: the plan's data is embedded as JSON, and
-the page draws it with `Leaflet <https://leafletjs.com/>`_ on OpenStreetMap
-tiles (both loaded from the web when the page is opened). Each truck gets its
+the page draws it with `Leaflet <https://leafletjs.com/>`_ on Esri basemap
+tiles (both loaded from the web when the page is opened).
+
+Why not OpenStreetMap's own tiles? Its volunteer-run tile servers block requests
+that carry no Referer header, and a page opened from a local file never sends
+one, so every tile would come back as an "Access blocked" image. Esri's public
+basemaps (built partly on OpenStreetMap data) serve file:// pages, with attribution. Each truck gets its
 own color and layer toggle, every stop has a popup, and optional overlays
 (for example FEMA disaster areas and weather alerts) can be added.
 """
@@ -23,6 +28,16 @@ SINGLE_COLOR = "#1fb6e8"
 ALERT_COLOR = "#d62828"
 
 LEAFLET = "https://unpkg.com/leaflet@1.9.4/dist"
+
+ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services"
+ESRI_ATTRIBUTION = ("Tiles &copy; Esri &mdash; Esri, HERE, Garmin, FAO, NOAA, USGS, &copy; OpenStreetMap "
+                    "contributors, and the GIS User Community")
+BASEMAPS = {  # name -> (tile URL, optional label overlay URL)
+    "streets": (f"{ESRI}/World_Street_Map/MapServer/tile/{{z}}/{{y}}/{{x}}", None),
+    "gray": (f"{ESRI}/Canvas/World_Light_Gray_Base/MapServer/tile/{{z}}/{{y}}/{{x}}",
+             f"{ESRI}/Canvas/World_Light_Gray_Reference/MapServer/tile/{{z}}/{{y}}/{{x}}"),
+    "topo": (f"{ESRI}/World_Topo_Map/MapServer/tile/{{z}}/{{y}}/{{x}}", None),
+}
 
 
 @dataclass
@@ -73,11 +88,15 @@ def road_path(points: Sequence[LatLon], legs: Optional[Sequence[Sequence[LatLon]
 
 def write_html(path: Path, title: str, summary_text: str, depot: Optional[LatLon], depot_name: str,
                tracks: List[MapTrack], overlays: Optional[List[MapOverlay]] = None,
-               footnote: str = "", view: Optional[Tuple[LatLon, LatLon]] = None) -> None:
+               footnote: str = "", view: Optional[Tuple[LatLon, LatLon]] = None,
+               basemap: str = "streets") -> None:
     """`view` = ((south, west), (north, east)) sets the initial map area instead of fitting the data."""
     data = {
         "title": title,
         "view": [list(view[0]), list(view[1])] if view else None,
+        "basemap": basemap if basemap in BASEMAPS else "streets",
+        "basemaps": {k: {"url": u, "labels": l} for k, (u, l) in BASEMAPS.items()},
+        "attribution": ESRI_ATTRIBUTION,
         "depot": {"lat": depot[0], "lon": depot[1], "name": depot_name} if depot else None,
         "tracks": [{
             "name": t.name, "color": t.color,
@@ -133,10 +152,14 @@ TEMPLATE = r"""<!doctype html>
   .leaflet-popup-content b { font-size: 14px; }
   .leaflet-popup-content .d { color: #444; margin-top: 2px; }
   .flag { color: #d62828; font-weight: 600; }
+  #notice { bottom: 28px; left: 50%; transform: translateX(-50%); padding: 8px 14px; max-width: 520px;
+            font-size: 13px; color: #8a1c1c; background: #fff4f4; border-color: #f0b4b4; }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div id="notice" class="card" hidden>The background map couldn't load (are you offline?). Routes, stops, and
+  overlays are still accurate. Try another background at top right, or reopen the file later.</div>
 <div id="summary" class="card">
   <button onclick="this.parentElement.classList.toggle('collapsed')" title="Show or hide">▾</button>
   <h1>{{TITLE}}</h1>
@@ -146,10 +169,23 @@ TEMPLATE = r"""<!doctype html>
 <script>
 const DATA = {{DATA}};
 const map = L.map("map", { zoomControl: true });
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · routekit'
-}).addTo(map);
+// Background maps (Esri). OpenStreetMap's own tile servers refuse pages opened from a file.
+let tileErrors = 0, tileLoads = 0;
+const notice = document.getElementById("notice");
+function watch(layer) {
+  layer.on("tileerror", () => { tileErrors++; if (tileErrors >= 6 && tileErrors > tileLoads) notice.hidden = false; });
+  layer.on("tileload", () => { tileLoads++; });
+  return layer;
+}
+const NAMES = { streets: "Streets", gray: "Light gray", topo: "Topographic" };
+const baseLayers = {};
+for (const [key, b] of Object.entries(DATA.basemaps)) {
+  const tiles = watch(L.tileLayer(b.url, { maxZoom: 19, attribution: DATA.attribution + " · routekit" }));
+  baseLayers[NAMES[key] || key] = b.labels
+    ? L.layerGroup([tiles, watch(L.tileLayer(b.labels, { maxZoom: 19, pane: "overlayPane" }))])
+    : tiles;
+}
+baseLayers[NAMES[DATA.basemap]].addTo(map);
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
@@ -190,7 +226,7 @@ if (DATA.depot) L.marker([DATA.depot.lat, DATA.depot.lon], {
   title: DATA.depot.name, zIndexOffset: 1000
 }).bindPopup(`<b>${esc(DATA.depot.name)}</b><div class="d">Depot: trucks start and end here</div>`).addTo(map);
 
-if (Object.keys(layers).length > 1) L.control.layers(null, layers, { collapsed: false }).addTo(map);
+L.control.layers(baseLayers, layers, { collapsed: false }).addTo(map);
 const card = document.getElementById("summary");
 function fit() {
   const wide = window.innerWidth > 900;  // keep routes out from under the summary card
