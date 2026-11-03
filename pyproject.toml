@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "routekit"
+version = "0.1.0"
+description = "Plan delivery routes from a CSV of U.S. addresses, right in your terminal."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Mike Scarnavack", email = "mhscarn@gmail.com"}]
+keywords = ["routing", "logistics", "tsp", "2-opt", "cli", "geocoding"]
+dependencies = [
+    "rich>=13",
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+demo = ["pillow>=10"]
+
+[project.scripts]
+routekit = "routekit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/M-Scarnavack/Nearest-Neighbor-Algorithm---Logistics-Project"
+
+[tool.setuptools.packages.find]
+include = ["routekit*"]
+
+[tool.setuptools.package-data]
+routekit = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore:urllib3 v2 only supports OpenSSL"]
