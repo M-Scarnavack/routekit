@@ -72,15 +72,19 @@ def _pts(n):
     return [(41.0, i / 1000) for i in range(n)]  # lon encodes the index for FakeOSRM
 
 
+def _flat(points):
+    return [c for p in points for c in p]  # pytest.approx can't compare nested pairs (pytest >= 9)
+
+
 def test_encode_decode_round_trip():
     pts = [(41.88445, -87.65452), (41.87892, -87.6366), (-33.5, 151.25)]
-    assert decode_polyline(encode_polyline(pts)) == pytest.approx(pts)
+    assert _flat(decode_polyline(encode_polyline(pts))) == pytest.approx(_flat(pts))
 
 
 def test_decode_polyline_reference_example():
     # Google's documented example
-    assert decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@") == pytest.approx(
-        [(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)])
+    assert _flat(decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@")) == pytest.approx(
+        _flat([(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)]))
 
 
 def test_symmetric_averages_directions():
