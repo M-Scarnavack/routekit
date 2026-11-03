@@ -377,24 +377,29 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 
 ### Roadmap
 
-- [x] Any-address input, 2-opt, animated terminal map
-- [x] Multiple trucks with capacities, time windows, and package rules (the C950 special notes, solved automatically)
-- [x] Claude Code skill
-- [x] Multiple trips per truck and driver limits
-- [x] Real road distances and drive times via OSRM (`--roads`)
-- [x] Truck routing (height, weight, length, hazmat) and toll reporting and avoidance via Valhalla
-- [x] Interactive HTML map export (`--html`)
-- [x] Live truck locations (Traccar) and `--start-at-truck`
-- [x] MCP server for AI agents (`routekit mcp`)
-- [ ] Samsara, Motive, and Geotab tracking connectors (needs a customer API token to verify)
-- [x] DAT load board and rate connector (`routekit dat`); still needs testing with real DAT API credentials
-- [x] PyPI release: `pip install routekit-cli`
-- [x] FEMA relief mode: `routekit disasters`, `--fema`, `--fema-within`, with NWS alerts on both maps
-- [x] Freight-demand map from FAF5 (`routekit freight`)
-- [x] Pickup-and-delivery shipments (A → B on the same trip, load tracked along the route)
-- [ ] Driver hours-of-service limits (11-hour driving, 14-hour window, 30-minute break)
-- [ ] Multiple depots (trucks starting from different yards in one plan)
-- [ ] Maximum ride time per shipment (today routekit minimizes miles, so freight can ride longer than needed)
+**Done**
+
+- Any-address input, 2-opt, animated terminal map
+- Multiple trucks with capacities, time windows, and package rules (the C950 special notes, solved automatically)
+- Claude Code skill
+- Multiple trips per truck and driver limits
+- Real road distances and drive times via OSRM (`--roads`)
+- Truck routing (height, weight, length, hazmat) and toll reporting and avoidance via Valhalla
+- Interactive HTML map export (`--html`)
+- Live truck locations (Traccar) and `--start-at-truck`
+- MCP server for AI agents (`routekit mcp`)
+- DAT load board and rate connector (`routekit dat`); still needs testing with real DAT API credentials
+- PyPI release: `pip install routekit-cli`
+- FEMA relief mode: `routekit disasters`, `--fema`, `--fema-within`, with NWS alerts on both maps
+- Freight-demand map from FAF5 (`routekit freight`)
+- Pickup-and-delivery shipments (A → B on the same trip, load tracked along the route)
+
+**Next**
+
+- Samsara, Motive, and Geotab tracking connectors (needs a customer API token to verify)
+- Driver hours-of-service limits (11-hour driving, 14-hour window, 30-minute break)
+- Multiple depots (trucks starting from different yards in one plan)
+- Maximum ride time per shipment (today routekit minimizes miles, so freight can ride longer than needed)
 
 ### Development
 
