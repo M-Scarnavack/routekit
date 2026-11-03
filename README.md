@@ -64,7 +64,7 @@ The C950 version only works on one fixed Salt Lake City distance table, and its 
 | **Algorithm** | Nearest neighbor | Nearest neighbor + **2-opt** for one truck; **cheapest feasible insertion + local search** (2-opt, relocate, swap) for fleets |
 | **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, must-ship-together groups, multiple trips per truck, and a driver limit |
 | **Output** | Text menu | Animated terminal map (one color per truck), schedules, and CSV export |
-| **Packaging** | Single script | Installable CLI with 182 automated tests, plus a Claude Code skill |
+| **Packaging** | Single script | Installable CLI with 210 automated tests, plus a Claude Code skill |
 
 ### Head-to-head: the original C950 problem, re-solved by routekit
 
@@ -117,6 +117,8 @@ The script independently re-checks every rule after solving, rather than trustin
 
   ![routekit relief plan for Hurricane Isaias: three trucks to 15 declared Florida counties, red-ringed stops in declared areas](docs/relief-map.jpg)
 
+- **Live truck locations (Traccar).** `routekit trucks` shows where every truck is: GPS position, speed, heading, and how fresh the fix is. It reads from [Traccar](https://www.traccar.org), free open-source fleet tracking (a GPS server plus a free driver phone app, or any of hundreds of GPS devices). `routekit plan … --start-at-truck "Truck 2"` plans a route from a truck's current position.
+- **Agent tools (MCP server).** `routekit mcp` lets AI agents use routekit as tools: `truck_locations`, `plan_route`, `fema_disasters`, and `geocode_address`. A dispatcher can ask *"Where's truck 2? Send it to Gary, then Joliet by 11, then Naperville, on truck routes"* and the agent finds the truck, plans the route from its live position, and reports arrival times and toll miles.
 - **Clear failures.** Unmatched addresses and stops that no truck can legally take are listed with how to fix them, never silently dropped.
 
 ### Install
@@ -201,7 +203,7 @@ Art Institute,111 S Michigan Ave Chicago IL 60603,2,9:00 AM,11:00 AM
 | `--avoid-tolls` | Stay off toll roads (car or truck) and report the extra miles and minutes |
 | `--valhalla-url URL` | Your own Valhalla server for truck and toll routing |
 | `--depot ADDRESS` | Start and end here instead of the first row |
-| `--one-way` | Single truck only: don't return to the depot |
+| `--one-way` | Don't return to the depot (with fleet options: one trip per truck) |
 | `--no-optimize` | Skip local search and show the construction heuristic alone |
 | `--offline` | Use only CSV coordinates or the geocode cache |
 | `--no-map` / `--no-animate` / `--no-basemap` / `--no-labels` | Map display options |
@@ -209,6 +211,7 @@ Art Institute,111 S Michigan Ave Chicago IL 60603,2,9:00 AM,11:00 AM
 | `--html FILE` | Save an interactive map to open in a browser |
 | `--fema` / `--fema-days N` | Flag stops in open FEMA disaster declarations (last N days, default 120) or under active NWS alerts |
 | `--fema-within HOURS` | Make declared-area stops priority deliveries, due within HOURS of the start |
+| `--start-at-truck NAME` | Start from a tracked truck's live position (Traccar), one way |
 
 **Disaster declarations:**
 
@@ -219,6 +222,50 @@ routekit disasters 4955 --stops relief.csv --depot "STAGING ADDRESS"   # countie
 ```
 
 Relief stops are each county's Census center point, a stand-in until you know the actual distribution sites. Data: [OpenFEMA](https://www.fema.gov/about/openfema/api) disaster declarations, [NWS](https://www.weather.gov/documentation/services-web-api) active alerts, and the Census geocoder for each stop's county. All are free U.S. government services with no key.
+
+### Where are my trucks? (Traccar)
+
+routekit reads live positions from a [Traccar](https://www.traccar.org) server: run your own (it's free and open source), or use Traccar's hosted service. Each driver runs the free **Traccar Client** app, or the truck has a supported GPS device. Then set:
+
+```bash
+export ROUTEKIT_TRACCAR_URL=https://your-traccar-server
+export ROUTEKIT_TRACCAR_TOKEN=...        # Traccar → Settings → Preferences → Token
+# (or ROUTEKIT_TRACCAR_USER and ROUTEKIT_TRACCAR_PASSWORD)
+
+routekit trucks                          # table of positions, speed, heading, fix age
+routekit trucks --json                   # for scripts and agents
+routekit trucks --html trucks.html       # browser map
+routekit plan stops.csv --start-at-truck "Truck 2" --truck   # route from where the truck is now
+```
+
+There's no public API for an arbitrary truck's location, so positions always come from the fleet's own tracking system. Samsara, Motive, and Geotab customers get API access to their own data, and connectors for them are on the roadmap.
+
+### Use it from an AI agent (MCP)
+
+`routekit mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, so routekit's features become tools any MCP-compatible agent can call:
+
+| Tool | What it does |
+|---|---|
+| `truck_locations` | Every tracked truck's live position, speed, heading, and fix age |
+| `plan_route` | Plan one truck or a fleet, from typed stops or a CSV, with any CLI option (roads, truck, tolls, windows, trips, drivers, FEMA, `start_at_truck`, HTML map); returns the stop-by-stop plan as data, plus the text report |
+| `fema_disasters` | Open FEMA declarations; optionally write declared counties as relief stops |
+| `geocode_address` | Check an address before routing to it |
+
+Register it with **Claude Code**:
+
+```bash
+claude mcp add routekit -e ROUTEKIT_TRACCAR_URL=https://your-traccar-server \
+    -e ROUTEKIT_TRACCAR_TOKEN=your-token -- routekit mcp
+```
+
+Or with **Claude Desktop** (in `claude_desktop_config.json`):
+
+```json
+{ "mcpServers": { "routekit": { "command": "routekit", "args": ["mcp"],
+    "env": { "ROUTEKIT_TRACCAR_URL": "https://your-traccar-server", "ROUTEKIT_TRACCAR_TOKEN": "your-token" } } } }
+```
+
+The server is implemented directly on JSON-RPC, with no MCP SDK, so it runs on Python 3.9 like the rest of routekit.
 
 ### Use it from Claude Code
 
@@ -257,11 +304,13 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/mapview.py` | Braille map rendering and animation frames |
 | `routekit/htmlmap.py` | Interactive HTML map (Leaflet + OpenStreetMap) |
 | `routekit/fema.py` | OpenFEMA declarations, NWS alerts, county lookup |
+| `routekit/tracking.py` | Live truck locations (Traccar; provider interface for more) |
+| `routekit/mcp_server.py` / `routekit/api.py` | MCP server for AI agents, and the structured API it calls |
 | `routekit/cli.py` | `routekit plan` command |
 | `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
 | `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
-| `tests/` | 182 pytest tests, including randomized rule verification |
+| `tests/` | 210 pytest tests, including randomized rule verification |
 
 ### Roadmap
 
@@ -272,6 +321,10 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - [x] Real road distances and drive times via OSRM (`--roads`)
 - [x] Truck routing (height, weight, length, hazmat) and toll reporting and avoidance via Valhalla
 - [x] Interactive HTML map export (`--html`)
+- [x] Live truck locations (Traccar) and `--start-at-truck`
+- [x] MCP server for AI agents (`routekit mcp`)
+- [ ] Samsara, Motive, and Geotab tracking connectors (needs a customer API token to verify)
+- [ ] DAT load board and rate connector (needs a DAT subscription and an approved API agreement)
 - [ ] PyPI release (as `routekit-cli`; the name `routekit` is taken)
 - [x] FEMA relief mode: `routekit disasters`, `--fema`, `--fema-within`, with NWS alerts on both maps
 - [ ] Freight-demand map from the government's FAF5 freight-flow data (live load-board data needs a paid DAT or Truckstop account)

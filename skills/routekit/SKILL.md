@@ -92,6 +92,12 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 - Add `--fema` to any `plan` to flag stops in declared counties or under NWS alerts. Add `--fema-within HOURS` to make those stops priority deliveries.
 - Report the disaster numbers, types, and programs (IH, IA, PA, HM) and any NWS alerts by stop. Don't overstate: a FEMA declaration means federal assistance is authorized for that county, not that every road there is passable.
 
+## Live trucks (Traccar)
+
+- If `ROUTEKIT_TRACCAR_URL` is set, `routekit trucks --json` gives every truck's position, speed, heading, and `age_minutes`. Treat fixes older than ~30 minutes as stale, and say so.
+- To reroute a truck from where it is now: `routekit plan "stop" "stop" … --start-at-truck "Truck 2"` (one way). Add `--truck` for truck-legal roads.
+- If the routekit MCP server is connected, prefer its tools (`truck_locations`, `plan_route`, `fema_disasters`, `geocode_address`) over shelling out. They return structured data.
+
 ## 5. Read the output and report back
 
 - **Summary panel:** total miles, the improvement from local search, trucks used, last truck back, windows met.

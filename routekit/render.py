@@ -143,7 +143,8 @@ def fleet_summary_panel(sol: FleetSolution, fleet: Fleet, stops: List[Stop], opt
                                                           (f"  (−{saved:,.1f} mi, −{pct:.1f}%)", "green")))
     used = [tr for tr in sol.trips if tr.stops]
     if used:
-        t.add_row("Last truck back", format_clock(max(tr.finish for tr in used)))
+        t.add_row("Last truck back" if fleet.round_trip else "Last stop done",
+                  format_clock(max(tr.finish for tr in used)))
     missing = set(sol.unassigned)
     windows = sum(1 for i, s in enumerate(stops) if i and i not in missing
                   and (s.latest is not None or s.earliest is not None))
@@ -161,22 +162,25 @@ def fleet_summary_panel(sol: FleetSolution, fleet: Fleet, stops: List[Stop], opt
                  border_style="cyan", expand=False)
 
 
-def _trip_label(tr, fleet: Fleet, marker: str = "") -> Text:
-    label = f"{marker}Truck {tr.truck}" + (f" · trip {tr.trip}" if fleet.trips > 1 else "")
+def _trip_label(tr, fleet: Fleet, marker: str = "", names: Optional[dict] = None) -> Text:
+    name = (names or {}).get(tr.truck) or f"Truck {tr.truck}"
+    label = f"{marker}{name}" + (f" · trip {tr.trip}" if fleet.trips > 1 else "")
     return Text(label, style=truck_style(tr.truck - 1))
 
 
-def trucks_table(sol: FleetSolution, fleet: Fleet, trip_tolls: Optional[dict] = None) -> Table:
+def trucks_table(sol: FleetSolution, fleet: Fleet, trip_tolls: Optional[dict] = None,
+                 names: Optional[dict] = None) -> Table:
     multi = fleet.trips > 1
     t = Table(title="Trips" if multi else "Trucks", title_style="bold", header_style="bold")
     cols = [("Truck", "left")] + ([("Driver", "right")] if fleet.drivers is not None else []) + [
-        ("Stops", "right"), ("Load", "right"), ("Leaves", "right"), ("Back", "right"), ("Miles", "right")] + (
+        ("Stops", "right"), ("Load", "right"), ("Leaves", "right"),
+        ("Back" if fleet.round_trip else "Done", "right"), ("Miles", "right")] + (
         [("Toll mi", "right")] if trip_tolls is not None else [])
     for col, j in cols:
         t.add_column(col, justify=j)
     for tr in sorted(sol.used, key=lambda tr: (tr.depart, tr.truck)):
         load = f"{tr.load:g}" + (f"/{fleet.capacity:g}" if fleet.capacity is not None else "")
-        row = [_trip_label(tr, fleet, "■ ")]
+        row = [_trip_label(tr, fleet, "■ ", names)]
         if fleet.drivers is not None:
             row.append(str(tr.driver or ""))
         row += [str(len(tr.stops)), load, format_clock(tr.depart), format_clock(tr.finish), f"{tr.miles:,.1f}"]
@@ -187,7 +191,8 @@ def trucks_table(sol: FleetSolution, fleet: Fleet, trip_tolls: Optional[dict] = 
     return t
 
 
-def fleet_stops_table(sol: FleetSolution, stops: List[Stop], d, fleet: Optional[Fleet] = None) -> Table:
+def fleet_stops_table(sol: FleetSolution, stops: List[Stop], d, fleet: Optional[Fleet] = None,
+                      names: Optional[dict] = None) -> Table:
     fleet = fleet or Fleet()
     t = Table(title="Stops", title_style="bold", header_style="bold")
     for col, j in (("Truck", "left"), ("#", "right"), ("Stop", "left"), ("Arrives", "right"),
@@ -199,7 +204,7 @@ def fleet_stops_table(sol: FleetSolution, stops: List[Stop], d, fleet: Optional[
         for n, arr in zip(tr.stops, tr.arrivals):
             numbers[tr.truck] = numbers.get(tr.truck, 0) + 1  # numbered per truck, matching the map
             s = stops[n]
-            t.add_row(_trip_label(tr, fleet), str(numbers[tr.truck]), s.name, format_clock(arr),
+            t.add_row(_trip_label(tr, fleet, "", names), str(numbers[tr.truck]), s.name, format_clock(arr),
                       _window(s), f"{d[prev][n]:,.1f}")
             prev = n
     return t

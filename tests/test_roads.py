@@ -144,7 +144,7 @@ def test_old_ssl_falls_back_to_curl(monkeypatch):
             raise requests.exceptions.SSLError("handshake failure")
     seen = {}
 
-    def fake_curl(method, url, body):
+    def fake_curl(method, url, body, headers=None):
         seen["url"] = url
         return 200, '{"code": "Ok", "distances": [[0, 1609.344], [1609.344, 0]], "durations": [[0, 60], [60, 0]]}'
     monkeypatch.setattr(http, "_via_curl", fake_curl)

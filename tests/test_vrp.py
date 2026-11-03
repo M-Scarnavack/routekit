@@ -298,3 +298,45 @@ def test_cli_trips_and_drivers(tmp_path, capsys):
     import csv as _csv
     rows = list(_csv.DictReader(out.open()))
     assert {"truck", "trip", "driver", "departs"} <= set(rows[0])
+
+
+# -- one-way fleet plans ------------------------------------------------------------
+
+@pytest.mark.parametrize("seed", range(8))
+def test_one_way_fleet_plans_end_at_last_stop(seed):
+    stops, d, _ = _random_problem(seed, n=20, trucks=3)
+    fleet = Fleet(trucks=3, capacity=16, start=8 * 60, mph=25, service=4, round_trip=False)
+    sol = solve_fleet(d, stops, fleet)
+    for t in sol.used:
+        legs = [d[0][t.stops[0]]] + [d[a][b] for a, b in zip(t.stops, t.stops[1:])]
+        assert t.miles == pytest.approx(sum(legs))  # no return leg
+        last = t.stops[-1]
+        svc = fleet.service if stops[last].service is None else stops[last].service
+        assert t.finish == pytest.approx(t.arrivals[-1] + svc)
+        for n, arr in zip(t.stops, t.arrivals):
+            if stops[n].latest is not None:
+                assert arr <= stops[n].latest + 1e-6
+    assert sol.miles <= sol.initial_miles + 1e-9 or len(sol.unassigned) < sol.initial_unassigned
+
+
+def test_one_way_is_shorter_than_round_trip():
+    stops = [Stop("Depot", "", 41.88, -87.63)] + [Stop(f"S{i}", "", 41.88 + 0.05 * i, -87.63) for i in range(1, 5)]
+    d = distance_matrix([(s.lat, s.lon) for s in stops])
+    rt = solve_fleet(d, stops, Fleet(trucks=1))
+    ow = solve_fleet(d, stops, Fleet(trucks=1, round_trip=False))
+    assert ow.used[0].stops == [1, 2, 3, 4]  # straight out, no reason to double back
+    assert ow.miles < rt.miles
+
+
+def test_one_way_rejects_multiple_trips():
+    stops = [Stop("Depot", "", 41.88, -87.63), Stop("A", "", 41.9, -87.63)]
+    with pytest.raises(ValueError, match="one trip per truck"):
+        FleetProblem(distance_matrix([(s.lat, s.lon) for s in stops]), stops, Fleet(trips=2, round_trip=False))
+
+
+def test_cli_one_way_with_deadline(capsys):
+    from routekit import cli
+    assert cli.main(["plan", "Yard: 41.88, -87.63", "A: 41.95, -87.65 @ 9:00", "B: 42.0, -87.7", "--one-way",
+                     "--no-map"]) == 0
+    out = capsys.readouterr().out
+    assert "Last stop done" in out and "Done" in out

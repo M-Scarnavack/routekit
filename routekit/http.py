@@ -10,6 +10,7 @@ Windows 10+, and supports TLS 1.3. The connection stays encrypted.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -44,16 +45,30 @@ def _wait_turn(url: str, interval: Optional[float] = None) -> None:
     _last_request[host] = time.monotonic()
 
 
-def _via_curl(method: str, url: str, body: Optional[dict]) -> tuple:
+def _via_curl(method: str, url: str, body: Optional[dict], headers: Optional[dict] = None) -> tuple:
     curl = shutil.which("curl")
     if not curl:
         raise HttpError("no curl available")
     cmd = [curl, "-sS", "--max-time", str(TIMEOUT), "-A", USER_AGENT, "-w", "\n%{http_code}"]
+    # Headers go in a private temp config file (mode 0600, deleted right after) so secrets such as an
+    # Authorization header never appear in the process list.
+    config = "".join(f'header = "{k}: {v}"\n' for k, v in (headers or {}).items() if k.lower() != "user-agent")
+    cfg_path = None
+    if config:
+        import tempfile
+        fd, cfg_path = tempfile.mkstemp(prefix="routekit-curl-", suffix=".cfg")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(config)
+        cmd += ["--config", cfg_path]
     if method == "POST":
         cmd += ["-H", "Content-Type: application/json", "--data-binary", "@-"]
     cmd.append(url)
-    out = subprocess.run(cmd, input=json.dumps(body) if body is not None else None,
-                         capture_output=True, text=True, timeout=TIMEOUT + 10)
+    try:
+        out = subprocess.run(cmd, input=json.dumps(body) if body is not None else None,
+                             capture_output=True, text=True, timeout=TIMEOUT + 10)
+    finally:
+        if cfg_path:
+            os.unlink(cfg_path)
     if out.returncode != 0:
         raise HttpError(f"curl failed: {out.stderr.strip() or out.returncode}")
     text, _, code = out.stdout.rpartition("\n")
@@ -85,7 +100,7 @@ def request_json(method: str, url: str, params: Optional[dict] = None, body: Opt
             data = None
     except requests.exceptions.SSLError as e:
         try:
-            status, text = _via_curl(method, url, body)  # old Python SSL: let curl do TLS 1.3
+            status, text = _via_curl(method, url, body, hdrs)  # old Python SSL: let curl do TLS 1.3
         except (HttpError, subprocess.SubprocessError, OSError) as ce:
             import ssl
             raise HttpError(

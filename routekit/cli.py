@@ -27,6 +27,7 @@ from routekit.htmlmap import (SINGLE_COLOR, TRUCK_COLORS, MapOverlay, MapStop, M
                               road_path, write_html)
 from routekit.render import _window  # noqa: E402
 from routekit.roads import RoadError, road_geometry, road_matrix, symmetric  # noqa: E402
+from routekit.tracking import TrackingError, compass, provider_from_env  # noqa: E402
 from routekit.truck import MatrixRangeError, Vehicle, truck_matrix, truck_route  # noqa: E402
 from routekit.render import (failures_table, fleet_stops_table, fleet_summary_panel,  # noqa: E402
                              map_panel, stops_table, summary_panel, trucks_table, unassigned_table)
@@ -83,6 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Count declarations made in the last N days (default 120).")
     relief.add_argument("--fema-within", type=float, metavar="HOURS",
                         help="Priority: stops in declared areas must be reached within HOURS of the start (implies --fema).")
+    plan.add_argument("--start-at-truck", metavar="NAME",
+                      help="Start from a tracked truck's current location (Traccar) instead of a depot; "
+                           "plans a one-way route.")
     plan.add_argument("--save-stops", type=Path, metavar="FILE",
                       help="Save the stops you typed to a CSV so you can rerun them later.")
     plan.add_argument("--depot", metavar="ADDRESS",
@@ -118,6 +122,15 @@ def build_parser() -> argparse.ArgumentParser:
                             "Drivers can switch trucks at the depot. Default: one per truck.")
     fleet.add_argument("--reload", type=float, default=0.0, metavar="MIN",
                        help="Minutes at the depot between a truck's trips (default 0).")
+    trk = sub.add_parser(
+        "trucks", help="Where are my trucks? Live locations from your tracking system (Traccar).",
+        description="Show each truck's latest GPS position from Traccar (free, open-source tracking). "
+                    "Set ROUTEKIT_TRACCAR_URL and ROUTEKIT_TRACCAR_TOKEN (or _USER/_PASSWORD).")
+    trk.add_argument("--json", action="store_true", help="Print machine-readable JSON (for scripts and agents).")
+    trk.add_argument("--html", type=Path, metavar="FILE", help="Save a browser map of the trucks.")
+    sub.add_parser("mcp", help="Run an MCP server so AI agents (Claude Code, Claude Desktop, ...) can use routekit as tools.",
+                   description="Speak the Model Context Protocol over stdin/stdout. Register it with your agent, "
+                               "e.g.: claude mcp add routekit -- routekit mcp")
     dis = sub.add_parser(
         "disasters", help="List open FEMA disaster declarations, and turn declared counties into relief stops.",
         description="List open FEMA disaster declarations (OpenFEMA, free). Give a disaster number to see its "
@@ -190,6 +203,25 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     except KeyboardInterrupt:
         console.print("\n[dim]Cancelled.[/dim]")
         return 130
+    if args.start_at_truck:
+        if args.depot:
+            console.print("[red]Error:[/red] use --depot or --start-at-truck, not both.")
+            return 2
+        try:
+            with console.status("Finding the truck…"):
+                truck = provider_from_env().find(args.start_at_truck)
+        except TrackingError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            return 1
+        age = truck.age_minutes
+        console.print(f"[green]✓[/green] {truck.name}: {truck.lat:.5f}, {truck.lon:.5f}"
+                      + (f" · {truck.speed_mph:.0f} mph {compass(truck.heading)}" if truck.moving else " · stopped")
+                      + (f" · position {age:.0f} min old" if age is not None else ""))
+        if age is not None and age > 30:
+            console.print(f"[yellow]Note:[/yellow] that position is {age:.0f} minutes old.")
+        stops.insert(0, Stop(name=f"{truck.name} (current location)", address="", lat=truck.lat, lon=truck.lon))
+        args.one_way = True
+        args.tracked_name = truck.name
     try:
         start = parse_clock(args.start)
         end = parse_clock(args.end) if args.end else None
@@ -203,8 +235,9 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     fleet_mode = args.trucks > 1 or args.capacity is not None or args.end is not None \
         or args.service > 0 or args.trips > 1 or args.drivers is not None or args.reload > 0 \
         or any(s.constrained or s.service for s in stops)
-    if fleet_mode and args.one_way:
-        console.print("[red]Error:[/red] --one-way isn't supported for fleet plans yet; trucks return to the depot.")
+    if fleet_mode and args.one_way and args.trips > 1:
+        console.print("[red]Error:[/red] --one-way allows one trip per truck (a truck can't reload without "
+                      "returning to the depot).")
         return 2
 
     if args.depot:
@@ -252,9 +285,6 @@ def plan(args: argparse.Namespace, console: Console) -> int:
                     st.latest = due if st.latest is None else min(st.latest, due)
                     count += 1
             args.priority = (count, due)
-            if args.one_way:
-                console.print("[red]Error:[/red] --fema-within uses fleet planning, which doesn't support --one-way yet.")
-                return 2
             fleet_mode = True
 
     minutes = None
@@ -435,12 +465,14 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
                       "without one, every truck can carry everything in one trip.")
     drivers = args.drivers if args.drivers is not None and args.drivers < args.trucks else None
     fleet = Fleet(trucks=args.trucks, capacity=capacity, start=start, end=end, mph=args.mph, service=args.service,
-                  trips=args.trips, drivers=drivers, reload=args.reload)
+                  trips=args.trips, drivers=drivers, reload=args.reload, round_trip=not args.one_way)
     problem = FleetProblem(d, located, fleet, minutes)
     with console.status("Planning trucks…"):
         sol = problem.solve(optimize=not args.no_optimize)
 
     used = sol.used
+    # A plan that starts from a tracked truck is about that truck: use its real name.
+    display = {1: args.tracked_name} if getattr(args, "tracked_name", None) and fleet.trucks == 1 else {}
     by_truck: dict = {}
     for t in sorted(used, key=lambda t: (t.truck, t.trip)):
         by_truck.setdefault(t.truck, []).append(t)
@@ -449,18 +481,19 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
     for truck, trips in by_truck.items():
         route = [depot]
         for t in trips:
-            route += [located[n] for n in t.stops] + [depot]
+            route += [located[n] for n in t.stops] + ([depot] if fleet.round_trip else [])
         truck_routes.append(route)
-        names.append(f"Truck {truck}" + (f" ({len(trips)} trips)" if len(trips) > 1 else ""))
+        names.append(display.get(truck, f"Truck {truck}") + (f" ({len(trips)} trips)" if len(trips) > 1 else ""))
     legs_info = route_legs(console, args, truck_routes) if used else None
     trip_tolls = None
     if legs_info and legs_info.has_tolls_data:
         trip_tolls = {}
         for (truck, trips), tolls in zip(by_truck.items(), legs_info.tolls):
             k = 0
-            for t in trips:  # each trip is len(stops) + 1 legs of its truck's chained route
-                trip_tolls[(t.truck, t.trip)] = sum(tolls[k:k + len(t.stops) + 1])
-                k += len(t.stops) + 1
+            for t in trips:  # each trip is len(stops) (+ 1 return) legs of its truck's chained route
+                n_legs = len(t.stops) + (1 if fleet.round_trip else 0)
+                trip_tolls[(t.truck, t.trip)] = sum(tolls[k:k + n_legs])
+                k += n_legs
     panel = fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced, distances,
                                 extra_rows=(legs_info.summary_rows() if legs_info else []) + fema_rows(args, located)
                           + ([args.planning_note] if args.planning_note else []))
@@ -473,8 +506,8 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
             console.print(map_panel(scene))
         else:
             animate(scene, console, n_stops=len(located))
-    console.print(trucks_table(sol, fleet, trip_tolls))
-    console.print(fleet_stops_table(sol, located, d, fleet))
+    console.print(trucks_table(sol, fleet, trip_tolls, display))
+    console.print(fleet_stops_table(sol, located, d, fleet, display))
     print_flags(console, args, located)
     for extra in (unassigned_table(sol, located), failures_table(failed)):
         if extra:
@@ -643,6 +676,66 @@ def fema_overlays(args):
     return overlays
 
 
+def trucks(args, console: Console) -> int:
+    import json as _json
+    from rich.table import Table
+    try:
+        with console.status("Getting truck locations…"):
+            provider = provider_from_env()
+            fleet_now = provider.trucks()
+    except TrackingError as e:
+        if args.json:
+            print(_json.dumps({"error": str(e)}))
+        else:
+            console.print(f"[red]Error:[/red] {e}")
+        return 1
+    if args.json:
+        print(_json.dumps({"provider": provider.name, "trucks": [t.to_dict() for t in fleet_now]}, indent=2))
+        return 0
+    if not fleet_now:
+        console.print("No trucks have reported a position yet.")
+        return 0
+    t = Table(title=f"Trucks ({provider.name})", title_style="bold", header_style="bold")
+    for col, j in (("Truck", "left"), ("Status", "left"), ("Location", "left"), ("Speed", "right"),
+                   ("Heading", "left"), ("Last fix", "right")):
+        t.add_column(col, justify=j)
+    for tr in fleet_now:
+        age = tr.age_minutes
+        stale = age is not None and age > 30
+        t.add_row(Text(tr.name, style="bold"),
+                  Text(tr.status, style="green" if tr.status == "online" else "dim"),
+                  tr.address or f"{tr.lat:.5f}, {tr.lon:.5f}",
+                  f"{tr.speed_mph:.0f} mph" if tr.moving else "stopped",
+                  compass(tr.heading) if tr.moving else "",
+                  Text(fmt_age(age), style="yellow" if stale else ""))
+    console.print(t)
+    if args.html:
+        tracks = [MapTrack(tr.name, TRUCK_COLORS[i % len(TRUCK_COLORS)], [], [MapStop(
+            tr.lat, tr.lon, str(i + 1), tr.name, [x for x in (
+                tr.address, f"{tr.status} · " + (f"{tr.speed_mph:.0f} mph {compass(tr.heading)}" if tr.moving
+                                                 else "stopped"),
+                f"Last fix {fmt_age(tr.age_minutes)}") if x])]) for i, tr in enumerate(fleet_now)]
+        first = fleet_now[0]
+        write_html(args.html, "routekit · trucks", "\n".join(
+            f"{tr.name:<16} {tr.status:<8} {fmt_age(tr.age_minutes)}" for tr in fleet_now),
+            (first.lat, first.lon), first.name, tracks,
+            footnote=f"Live positions from {provider.name}. Refresh by running 'routekit trucks --html' again.")
+        console.print(f"[green]Saved map to {args.html}[/green]")
+    return 0
+
+
+def fmt_age(minutes: Optional[float]) -> str:
+    if minutes is None:
+        return "unknown"
+    if minutes < 1:
+        return "just now"
+    if minutes < 90:
+        return f"{minutes:.0f} min ago"
+    if minutes < 48 * 60:
+        return f"{minutes / 60:.1f} h ago"
+    return f"{minutes / 1440:.0f} days ago"
+
+
 def disasters(args, console: Console) -> int:
     from rich.table import Table
     try:
@@ -712,13 +805,18 @@ def disasters(args, console: Console) -> int:
     return 0
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None, console: Optional[Console] = None) -> int:
     args = build_parser().parse_args(argv)
-    console = Console()
+    console = console or Console()
     if args.command == "plan":
         return plan(args, console)
     if args.command == "disasters":
         return disasters(args, console)
+    if args.command == "trucks":
+        return trucks(args, console)
+    if args.command == "mcp":
+        from routekit.mcp_server import serve
+        return serve()
     return 2
 
 

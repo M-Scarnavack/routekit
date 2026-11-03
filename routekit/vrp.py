@@ -55,6 +55,7 @@ class Fleet:
     trips: int = 1                  # max trips per truck
     drivers: Optional[int] = None   # None = one driver per truck
     reload: float = 0.0             # minutes at the depot between a truck's trips
+    round_trip: bool = True         # False: trips end at their last stop (one trip per truck)
 
     @property
     def driver_count(self) -> int:
@@ -120,6 +121,8 @@ class FleetProblem:
             raise ValueError("need at least one truck and one trip per truck")
         if fleet.drivers is not None and fleet.drivers < 1:
             raise ValueError("need at least one driver")
+        if not fleet.round_trip and fleet.trips > 1:
+            raise ValueError("one-way plans allow one trip per truck (a truck can't reload without returning)")
         self.d = d
         self.n = len(stops)
         self.fleet = fleet
@@ -148,7 +151,7 @@ class FleetProblem:
         if not route:
             return 0.0
         d = self.d
-        total = d[0][route[0]] + d[route[-1]][0]
+        total = d[0][route[0]] + (d[route[-1]][0] if self.fleet.round_trip else 0.0)
         for a, b in zip(route, route[1:]):
             total += d[a][b]
         return total
@@ -188,7 +191,8 @@ class FleetProblem:
             arrivals.append(t)
             t += self.service[n]
             prev = n
-        t += tm[prev][0] if tm is not None else d[prev][0] * mpm
+        if self.fleet.round_trip:
+            t += tm[prev][0] if tm is not None else d[prev][0] * mpm
         if self.fleet.end is not None and route and t > self.fleet.end + EPS:
             return None
         load = sum(self.demand[n] for n in route)
@@ -273,9 +277,13 @@ class FleetProblem:
         best = None
         seq = [0] + route + [0]
         original = route
+        one_way = not self.fleet.round_trip
         for pos in range(len(route) + 1):
             a, b = seq[pos], seq[pos + 1]
-            added = d[a][node] + d[node][b] - d[a][b]
+            if one_way and pos == len(route):
+                added = d[a][node]  # appended at the end: no closing edge back to the depot
+            else:
+                added = d[a][node] + d[node][b] - d[a][b]
             if best is not None and added >= best[0] - EPS:
                 continue
             routes[slot] = route[:pos] + [node] + route[pos:]
@@ -345,6 +353,8 @@ class FleetProblem:
     # -- local search -----------------------------------------------------
 
     def _two_opt(self, routes: List[List[int]], slot: int) -> bool:
+        if not self.fleet.round_trip:
+            return self._two_opt_open(routes, slot)
         d = self.d
         improved_any = False
         improved = True
@@ -361,6 +371,28 @@ class FleetProblem:
                             improved = improved_any = True
                             break
                         routes[slot] = before
+                if improved:
+                    break
+        return improved_any
+
+    def _two_opt_open(self, routes: List[List[int]], slot: int) -> bool:
+        """2-opt for one-way trips: compare full route miles (the end is free, so the usual
+        four-edge delta doesn't apply to segments that reach the last stop)."""
+        improved_any = False
+        improved = True
+        while improved:
+            improved = False
+            r = routes[slot]
+            base = self.miles(r)
+            for i in range(len(r) - 1):
+                for j in range(i + 1, len(r)):
+                    cand = r[:i] + r[i:j + 1][::-1] + r[j + 1:]
+                    if self.miles(cand) < base - 1e-6:
+                        routes[slot] = cand
+                        if self._ok(routes, (slot,)):
+                            improved = improved_any = True
+                            break
+                        routes[slot] = r
                 if improved:
                     break
         return improved_any
