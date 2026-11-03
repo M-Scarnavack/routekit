@@ -21,6 +21,8 @@ from routekit.geocode import GeocodeError, geocode_stops  # noqa: E402
 from routekit.mapview import MapScene  # noqa: E402
 from rich.text import Text  # noqa: E402
 
+from routekit.htmlmap import SINGLE_COLOR, TRUCK_COLORS, MapStop, MapTrack, road_path, write_html  # noqa: E402
+from routekit.render import _window  # noqa: E402
 from routekit.roads import RoadError, road_geometry, road_matrix, symmetric  # noqa: E402
 from routekit.truck import Vehicle, truck_matrix, truck_route  # noqa: E402
 from routekit.render import (failures_table, fleet_stops_table, fleet_summary_panel,  # noqa: E402
@@ -82,6 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--no-basemap", action="store_true", help="Hide the state-outline background.")
     plan.add_argument("--no-labels", action="store_true", help="Hide stop-order numbers on the map.")
     plan.add_argument("-o", "--output", type=Path, metavar="FILE", help="Write the ordered route to a CSV.")
+    plan.add_argument("--html", type=Path, metavar="FILE",
+                      help="Also write an interactive map (open it in any browser, or share the file).")
 
     fleet = plan.add_argument_group(
         "fleet planning",
@@ -250,10 +254,11 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     leg_minutes = [minutes[a][b] for a, b in zip(route, route[1:])] if minutes else None
 
     legs_info = route_legs(console, args, [ordered])
-    console.print(summary_panel(len(located) - 1, nn_miles, miles, not args.no_optimize,
-                                round_trip, args.mph, len(failed),
-                                sum(leg_minutes) if leg_minutes else None, distances,
-                                extra_rows=legs_info.summary_rows() if legs_info else None))
+    panel = summary_panel(len(located) - 1, nn_miles, miles, not args.no_optimize,
+                          round_trip, args.mph, len(failed),
+                          sum(leg_minutes) if leg_minutes else None, distances,
+                          extra_rows=legs_info.summary_rows() if legs_info else None)
+    console.print(panel)
     if not args.no_map:
         width = max(30, min(console.width - 4, 100))
         scene = MapScene([ordered], cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
@@ -270,6 +275,20 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     if args.output:
         save_route(args.output, ordered, legs)
         console.print(f"[green]Saved route to {args.output}[/green]")
+    if args.html:
+        stops_out, total, total_min = [], 0.0, 0.0
+        n_points = len(ordered) - (1 if round_trip else 0)
+        for i in range(1, n_points):
+            total += legs[i - 1]
+            total_min += leg_minutes[i - 1] if leg_minutes else legs[i - 1] / args.mph * 60
+            s = ordered[i]
+            stops_out.append(MapStop(s.lat, s.lon, str(i), s.name, [
+                x for x in (s.address, f"Stop {i} of {n_points - 1}",
+                            f"{total:,.1f} mi and {fmt_duration(total_min)} from the depot") if x]))
+        track = MapTrack("Route", SINGLE_COLOR,
+                         road_path([(s.lat, s.lon) for s in ordered], legs_info.shapes[0] if legs_info else None),
+                         stops_out)
+        save_html(console, args, panel, ordered[0], [track], distances)
     return 0
 
 
@@ -378,8 +397,9 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
             for t in trips:  # each trip is len(stops) + 1 legs of its truck's chained route
                 trip_tolls[(t.truck, t.trip)] = sum(tolls[k:k + len(t.stops) + 1])
                 k += len(t.stops) + 1
-    console.print(fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced, distances,
-                                      extra_rows=legs_info.summary_rows() if legs_info else None))
+    panel = fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced, distances,
+                                extra_rows=legs_info.summary_rows() if legs_info else None)
+    console.print(panel)
     if not args.no_map and used:
         width = max(30, min(console.width - 4, 100))
         scene = MapScene(truck_routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
@@ -396,7 +416,42 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
     if args.output:
         save_fleet(args.output, sol, located, d)
         console.print(f"[green]Saved plan to {args.output}[/green]")
+    if args.html and used:
+        tracks = []
+        for k, ((truck, trips), route) in enumerate(zip(by_truck.items(), truck_routes)):
+            stops_out, number = [], 0
+            for t in trips:
+                for n, arr in zip(t.stops, t.arrivals):
+                    number += 1
+                    s = located[n]
+                    window = _window(s)
+                    stops_out.append(MapStop(s.lat, s.lon, str(number), s.name, [x for x in (
+                        s.address,
+                        f"Truck {truck}" + (f" · trip {t.trip}" if fleet.trips > 1 else "")
+                        + (f" · driver {t.driver}" if t.driver else ""),
+                        f"Arrives {format_clock(arr)}",
+                        f"Window: {window}" if window else "") if x]))
+            tracks.append(MapTrack(names[k], TRUCK_COLORS[(truck - 1) % len(TRUCK_COLORS)],
+                                   road_path([(s.lat, s.lon) for s in route],
+                                             legs_info.shapes[k] if legs_info else None), stops_out))
+        save_html(console, args, panel, located[0], tracks, distances)
     return 0
+
+
+def fmt_duration(minutes: float) -> str:
+    m = int(round(minutes))
+    return f"{m // 60}h {m % 60:02d}m"
+
+
+def save_html(console: Console, args, panel, depot: Stop, tracks, distances: str) -> None:
+    import io
+    rec = Console(record=True, width=72, file=io.StringIO(), color_system=None)
+    rec.print(panel)
+    summary = rec.export_text().rstrip()
+    title = f"routekit · {args.inputs[0] if len(args.inputs) == 1 else 'route plan'}"
+    write_html(args.html, title, summary, (depot.lat, depot.lon), depot.name, tracks,
+               footnote=f"Distances: {distances}. Click a stop for details; toggle trucks at top right.")
+    console.print(f"[green]Saved interactive map to {args.html}[/green]  [dim](open it in a browser)[/dim]")
 
 
 def save_fleet(path: Path, sol: FleetSolution, located: List[Stop], d) -> None:

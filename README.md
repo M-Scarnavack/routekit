@@ -64,7 +64,7 @@ The C950 version only works on one fixed Salt Lake City distance table, and its 
 | **Algorithm** | Nearest neighbor | Nearest neighbor + **2-opt** for one truck; **cheapest feasible insertion + local search** (2-opt, relocate, swap) for fleets |
 | **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, must-ship-together groups, multiple trips per truck, and a driver limit |
 | **Output** | Text menu | Animated terminal map (one color per truck), schedules, and CSV export |
-| **Packaging** | Single script | Installable CLI with 169 automated tests, plus a Claude Code skill |
+| **Packaging** | Single script | Installable CLI with 173 automated tests, plus a Claude Code skill |
 
 ### Head-to-head: the original C950 problem, re-solved by routekit
 
@@ -103,6 +103,10 @@ The script independently re-checks every rule after solving, rather than trustin
 - **Truck routing and tolls.** `--truck` routes for a tractor-trailer, or give `--height`, `--weight`, `--length`, and `--hazmat`, so low bridges, weight limits, and hazmat restrictions are respected. Every leg shows its toll-road miles. `--avoid-tolls` stays off toll roads and reports exactly what that costs: on a Chicago–Gary–O'Hare–Joliet–Naperville loop, **+6.7 mi and +43 min**. This uses the free [Valhalla](https://valhalla.github.io/valhalla/) server run by FOSSGIS.
 - **2-opt optimization** for single routes: the 30-city demo drops from **11,737 to 10,139 miles (−13.6%)**.
 - **Animated terminal map.** Routes draw themselves over U.S. state outlines from Natural Earth, with one color per truck and every stop numbered.
+- **Interactive browser map (`--html map.html`).** One self-contained file: OpenStreetMap streets, each truck's route (on real roads with `--roads` or `--truck`), clickable stops with address, arrival time, and window, and a toggle for each truck. Open it, or send it to someone who doesn't use a terminal.
+
+  ![routekit's HTML map of a three-truck Chicago plan on real roads](docs/html-map.jpg)
+
 - **Clear failures.** Unmatched addresses and stops that no truck can legally take are listed with how to fix them, never silently dropped.
 
 ### Install
@@ -192,6 +196,7 @@ Art Institute,111 S Michigan Ave Chicago IL 60603,2,9:00 AM,11:00 AM
 | `--offline` | Use only CSV coordinates or the geocode cache |
 | `--no-map` / `--no-animate` / `--no-basemap` / `--no-labels` | Map display options |
 | `-o FILE` | Save the plan, with truck, order, arrival time, and miles, to a CSV |
+| `--html FILE` | Save an interactive map to open in a browser |
 
 ### Use it from Claude Code
 
@@ -228,11 +233,12 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/truck.py` | Valhalla truck routing, toll miles, and toll avoidance |
 | `routekit/http.py` | Rate limiting, plus a curl fallback for Pythons without TLS 1.3 |
 | `routekit/mapview.py` | Braille map rendering and animation frames |
+| `routekit/htmlmap.py` | Interactive HTML map (Leaflet + OpenStreetMap) |
 | `routekit/cli.py` | `routekit plan` command |
 | `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
 | `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
-| `tests/` | 169 pytest tests, including randomized rule verification |
+| `tests/` | 173 pytest tests, including randomized rule verification |
 
 ### Roadmap
 
@@ -242,7 +248,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - [x] Multiple trips per truck and driver limits
 - [x] Real road distances and drive times via OSRM (`--roads`)
 - [x] Truck routing (height, weight, length, hazmat) and toll reporting and avoidance via Valhalla
-- [ ] Interactive HTML map export
+- [x] Interactive HTML map export (`--html`)
 - [ ] PyPI release (as `routekit-cli`; the name `routekit` is taken)
 - [ ] FEMA relief mode: flag and prioritize stops in counties with active OpenFEMA disaster declarations, and overlay NWS weather alerts
 - [ ] Freight-demand map from the government's FAF5 freight-flow data (live load-board data needs a paid DAT or Truckstop account)

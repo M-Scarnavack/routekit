@@ -83,6 +83,7 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 | `--avoid-tolls` | Stay off toll roads and report the extra miles and minutes it costs |
 | `--offline` | No network; use CSV coordinates or the geocode cache |
 | `-o FILE` | Save the ordered plan (truck, order, arrival time, miles) |
+| `--html FILE` | Save an interactive browser map; offer it when the user wants to see or share the plan |
 
 ## 5. Read the output and report back
 
