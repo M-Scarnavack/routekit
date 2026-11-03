@@ -33,9 +33,12 @@ class HttpError(RuntimeError):
         self.status = status
 
 
-def _wait_turn(url: str) -> None:
+def _wait_turn(url: str, interval: Optional[float] = None) -> None:
+    interval = MIN_INTERVAL if interval is None else interval
+    if interval <= 0:
+        return
     host = urlsplit(url).netloc
-    wait = MIN_INTERVAL - (time.monotonic() - _last_request.get(host, 0.0))
+    wait = interval - (time.monotonic() - _last_request.get(host, 0.0))
     if wait > 0:
         time.sleep(wait)
     _last_request[host] = time.monotonic()
@@ -58,7 +61,7 @@ def _via_curl(method: str, url: str, body: Optional[dict]) -> tuple:
 
 
 def request_json(method: str, url: str, params: Optional[dict] = None, body: Optional[dict] = None,
-                 session=None) -> dict:
+                 session=None, interval: Optional[float] = None, headers: Optional[dict] = None) -> dict:
     """GET (with `params`) or POST (with JSON `body`) and return parsed JSON.
 
     Raises HttpError with `.status` set for HTTP errors, or a plain HttpError when
@@ -66,14 +69,15 @@ def request_json(method: str, url: str, params: Optional[dict] = None, body: Opt
     """
     if params:
         url = f"{url}?{urlencode(params)}"
-    _wait_turn(url)
+    _wait_turn(url, interval)
+    hdrs = {"User-Agent": USER_AGENT, **(headers or {})}
     try:
         if session is None:
             session = requests
         if method == "POST":
-            resp = session.post(url, json=body, timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
+            resp = session.post(url, json=body, timeout=TIMEOUT, headers=hdrs)
         else:
-            resp = session.get(url, timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
+            resp = session.get(url, timeout=TIMEOUT, headers=hdrs)
         status, text = resp.status_code, None
         try:
             data = resp.json()

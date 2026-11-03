@@ -21,10 +21,13 @@ from routekit.geocode import GeocodeError, geocode_stops  # noqa: E402
 from routekit.mapview import MapScene  # noqa: E402
 from rich.text import Text  # noqa: E402
 
-from routekit.htmlmap import SINGLE_COLOR, TRUCK_COLORS, MapStop, MapTrack, road_path, write_html  # noqa: E402
+from routekit.fema import (KINDS, DisasterDataError, assess, counties, county_name,  # noqa: E402
+                           group_by_disaster, open_declarations)
+from routekit.htmlmap import (SINGLE_COLOR, TRUCK_COLORS, MapOverlay, MapStop, MapTrack,  # noqa: E402
+                              road_path, write_html)
 from routekit.render import _window  # noqa: E402
 from routekit.roads import RoadError, road_geometry, road_matrix, symmetric  # noqa: E402
-from routekit.truck import Vehicle, truck_matrix, truck_route  # noqa: E402
+from routekit.truck import MatrixRangeError, Vehicle, truck_matrix, truck_route  # noqa: E402
 from routekit.render import (failures_table, fleet_stops_table, fleet_summary_panel,  # noqa: E402
                              map_panel, stops_table, summary_panel, trucks_table, unassigned_table)
 from routekit.solver import distance_matrix, nearest_neighbor, route_length, two_opt  # noqa: E402
@@ -71,6 +74,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Never use toll roads, and report what avoiding them costs.")
     truck.add_argument("--valhalla-url", metavar="URL",
                        help="Valhalla server (default: the free public FOSSGIS server, or $ROUTEKIT_VALHALLA_URL).")
+    relief = plan.add_argument_group(
+        "disaster relief (FEMA + NWS)",
+        "Flag stops in counties with open FEMA disaster declarations or active National Weather Service "
+        "alerts (free U.S. government data, no key).")
+    relief.add_argument("--fema", action="store_true", help="Flag stops in declared disaster areas or under weather alerts.")
+    relief.add_argument("--fema-days", type=int, default=120, metavar="N",
+                        help="Count declarations made in the last N days (default 120).")
+    relief.add_argument("--fema-within", type=float, metavar="HOURS",
+                        help="Priority: stops in declared areas must be reached within HOURS of the start (implies --fema).")
     plan.add_argument("--save-stops", type=Path, metavar="FILE",
                       help="Save the stops you typed to a CSV so you can rerun them later.")
     plan.add_argument("--depot", metavar="ADDRESS",
@@ -106,6 +118,16 @@ def build_parser() -> argparse.ArgumentParser:
                             "Drivers can switch trucks at the depot. Default: one per truck.")
     fleet.add_argument("--reload", type=float, default=0.0, metavar="MIN",
                        help="Minutes at the depot between a truck's trips (default 0).")
+    dis = sub.add_parser(
+        "disasters", help="List open FEMA disaster declarations, and turn declared counties into relief stops.",
+        description="List open FEMA disaster declarations (OpenFEMA, free). Give a disaster number to see its "
+                    "counties, and --stops to save them as a CSV you can route with 'routekit plan'.")
+    dis.add_argument("number", nargs="?", type=int, help="A FEMA disaster number, e.g. 4955.")
+    dis.add_argument("--state", action="append", metavar="ST", help="Only these states (repeatable), e.g. --state FL.")
+    dis.add_argument("--days", type=int, default=120, metavar="N", help="Declared in the last N days (default 120).")
+    dis.add_argument("--stops", type=Path, metavar="FILE",
+                     help="Save the declared counties as relief stops (each county's center) to a CSV.")
+    dis.add_argument("--depot", metavar="ADDRESS", help="With --stops: put this staging area first, as the depot.")
     return p
 
 
@@ -212,20 +234,59 @@ def plan(args: argparse.Namespace, console: Console) -> int:
             console.print(failures_table(failed))
         return 1
 
+    args.risk, args.priority = None, None
+    if args.fema or args.fema_within is not None:
+        try:
+            with console.status("Checking FEMA disaster declarations and NWS weather alerts…"):
+                risks, decls, alerts = assess([(s.lat, s.lon) for s in located], days=args.fema_days)
+        except DisasterDataError as e:
+            console.print(f"[red]Error:[/red] {e}. Run without --fema to skip disaster checks.")
+            return 1
+        args.risk = {id(s): r for s, r in zip(located, risks)}
+        args.alerts = alerts
+        if args.fema_within is not None:
+            due = (start if start is not None else 8 * 60) + args.fema_within * 60
+            count = 0
+            for st in located[1:]:
+                if args.risk[id(st)].declared:
+                    st.latest = due if st.latest is None else min(st.latest, due)
+                    count += 1
+            args.priority = (count, due)
+            if args.one_way:
+                console.print("[red]Error:[/red] --fema-within uses fleet planning, which doesn't support --one-way yet.")
+                return 2
+            fleet_mode = True
+
     minutes = None
     distances = "straight-line miles"
     args.vehicle = vehicle_from(args)
+    args.planning_note = None
     if args.vehicle is not None:
         try:
             with console.status("Getting truck road distances from Valhalla…") as status:
                 miles_dir, minutes = truck_matrix(
                     [(s.lat, s.lon) for s in located], args.vehicle, args.valhalla_url,
                     progress=lambda k, n: status.update(f"Getting road distances from Valhalla… {k}/{n}"))
+            distances = f"road miles · {args.vehicle.describe()} · OpenStreetMap via Valhalla"
+        except MatrixRangeError:
+            # Long-haul: plan on OSRM's (car) road table, then truck-route each final leg with Valhalla.
+            try:
+                with console.status("Stops are far apart: getting the road distance table from OSRM…") as status:
+                    miles_dir, minutes = road_matrix(
+                        [(s.lat, s.lon) for s in located], args.osrm_url,
+                        progress=lambda k, n: status.update(f"Getting road distances from OSRM… {k}/{n}"))
+            except RoadError as e:
+                console.print(f"[red]Error:[/red] {e}. Run without truck/toll options for straight-line distances.")
+                return 1
+            distances = f"road miles · planned on car roads (OSRM), legs routed as {args.vehicle.describe()} (Valhalla)"
+            args.planning_note = ("Planning", Text(
+                "stops are over ~93 mi apart, beyond the public Valhalla server's truck distance table, so stop "
+                "order and times use car road data; the map, miles, and tolls below use truck routing",
+                style="yellow"))
         except RoadError as e:
             console.print(f"[red]Error:[/red] {e}. Run without truck/toll options for straight-line distances.")
             return 1
         d = symmetric(miles_dir)
-        distances = f"road miles · {args.vehicle.describe()} · OpenStreetMap via Valhalla"
     elif args.roads:
         try:
             with console.status("Getting road distances from OSRM…") as status:
@@ -257,18 +318,20 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     panel = summary_panel(len(located) - 1, nn_miles, miles, not args.no_optimize,
                           round_trip, args.mph, len(failed),
                           sum(leg_minutes) if leg_minutes else None, distances,
-                          extra_rows=legs_info.summary_rows() if legs_info else None)
+                          extra_rows=(legs_info.summary_rows() if legs_info else []) + fema_rows(args, located)
+                          + ([args.planning_note] if args.planning_note else []))
     console.print(panel)
     if not args.no_map:
         width = max(30, min(console.width - 4, 100))
         scene = MapScene([ordered], cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
-                         shapes=legs_info.shapes if legs_info else None)
+                         shapes=legs_info.shapes if legs_info else None, flagged=flagged_ids(args))
         if args.no_animate or not console.is_terminal:
             console.print(map_panel(scene))
         else:
             animate(scene, console, n_stops=len(located))
     console.print(stops_table(ordered, legs, round_trip, args.mph, leg_minutes,
                               legs_info.tolls[0] if legs_info and legs_info.has_tolls_data else None))
+    print_flags(console, args, located)
     ft = failures_table(failed)
     if ft:
         console.print(ft)
@@ -284,7 +347,8 @@ def plan(args: argparse.Namespace, console: Console) -> int:
             s = ordered[i]
             stops_out.append(MapStop(s.lat, s.lon, str(i), s.name, [
                 x for x in (s.address, f"Stop {i} of {n_points - 1}",
-                            f"{total:,.1f} mi and {fmt_duration(total_min)} from the depot") if x]))
+                            f"{total:,.1f} mi and {fmt_duration(total_min)} from the depot") if x]
+                + risk_notes(args, s), flagged=is_flagged(args, s)))
         track = MapTrack("Route", SINGLE_COLOR,
                          road_path([(s.lat, s.lon) for s in ordered], legs_info.shapes[0] if legs_info else None),
                          stops_out)
@@ -398,18 +462,20 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
                 trip_tolls[(t.truck, t.trip)] = sum(tolls[k:k + len(t.stops) + 1])
                 k += len(t.stops) + 1
     panel = fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced, distances,
-                                extra_rows=legs_info.summary_rows() if legs_info else None)
+                                extra_rows=(legs_info.summary_rows() if legs_info else []) + fema_rows(args, located)
+                          + ([args.planning_note] if args.planning_note else []))
     console.print(panel)
     if not args.no_map and used:
         width = max(30, min(console.width - 4, 100))
         scene = MapScene(truck_routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
-                         names=names, shapes=legs_info.shapes if legs_info else None)
+                         names=names, shapes=legs_info.shapes if legs_info else None, flagged=flagged_ids(args))
         if args.no_animate or not console.is_terminal:
             console.print(map_panel(scene))
         else:
             animate(scene, console, n_stops=len(located))
     console.print(trucks_table(sol, fleet, trip_tolls))
     console.print(fleet_stops_table(sol, located, d, fleet))
+    print_flags(console, args, located)
     for extra in (unassigned_table(sol, located), failures_table(failed)):
         if extra:
             console.print(extra)
@@ -430,7 +496,8 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
                         f"Truck {truck}" + (f" · trip {t.trip}" if fleet.trips > 1 else "")
                         + (f" · driver {t.driver}" if t.driver else ""),
                         f"Arrives {format_clock(arr)}",
-                        f"Window: {window}" if window else "") if x]))
+                        f"Window: {window}" if window else "") if x] + risk_notes(args, s),
+                        flagged=is_flagged(args, s)))
             tracks.append(MapTrack(names[k], TRUCK_COLORS[(truck - 1) % len(TRUCK_COLORS)],
                                    road_path([(s.lat, s.lon) for s in route],
                                              legs_info.shapes[k] if legs_info else None), stops_out))
@@ -445,12 +512,15 @@ def fmt_duration(minutes: float) -> str:
 
 def save_html(console: Console, args, panel, depot: Stop, tracks, distances: str) -> None:
     import io
-    rec = Console(record=True, width=72, file=io.StringIO(), color_system=None)
-    rec.print(panel)
-    summary = rec.export_text().rstrip()
-    title = f"routekit · {args.inputs[0] if len(args.inputs) == 1 else 'route plan'}"
+    rec = Console(record=True, width=64, file=io.StringIO(), color_system=None)
+    rec.print(panel.renderable)  # the rows without the box, so long values wrap cleanly
+    summary = "\n".join(line.rstrip() for line in rec.export_text().splitlines()).strip("\n")
+    title = f"routekit · {Path(args.inputs[0]).name if len(args.inputs) == 1 else 'route plan'}"
     write_html(args.html, title, summary, (depot.lat, depot.lon), depot.name, tracks,
-               footnote=f"Distances: {distances}. Click a stop for details; toggle trucks at top right.")
+               overlays=fema_overlays(args),
+               footnote=f"Distances: {distances}. Click a stop for details; toggle layers at top right."
+                        + (" Red-ringed stops are in FEMA-declared areas or under NWS alerts."
+                           if getattr(args, "risk", None) else ""))
     console.print(f"[green]Saved interactive map to {args.html}[/green]  [dim](open it in a browser)[/dim]")
 
 
@@ -476,11 +546,179 @@ def save_fleet(path: Path, sol: FleetSolution, located: List[Stop], d) -> None:
                         format_clock(s.latest), "", ""])
 
 
+# -- disaster relief helpers ----------------------------------------------------
+
+def is_flagged(args, stop: Stop) -> bool:
+    risk = getattr(args, "risk", None)
+    return bool(risk and risk.get(id(stop)) and risk[id(stop)].flagged)
+
+
+def flagged_ids(args):
+    risk = getattr(args, "risk", None)
+    return {k for k, r in risk.items() if r.flagged} if risk else None
+
+
+def risk_notes(args, stop: Stop) -> List[str]:
+    risk = getattr(args, "risk", None)
+    r = risk.get(id(stop)) if risk else None
+    return r.notes() if r else []
+
+
+def fema_rows(args, located: List[Stop]):
+    risk = getattr(args, "risk", None)
+    if not risk:
+        return []
+    stops = located[1:]
+    declared = [s for s in stops if risk[id(s)].declared]
+    alerted = [s for s in stops if risk[id(s)].alerts]
+    rows = []
+    if declared:
+        names = sorted({d.label for s in declared for d in risk[id(s)].declarations})
+        rows.append(("FEMA", Text(f"{len(declared)} of {len(stops)} stops in declared disaster areas: "
+                                  + "; ".join(names), style="bold red")))
+    else:
+        rows.append(("FEMA", Text(f"no stops in open declarations (last {args.fema_days} days)", style="green")))
+    if alerted:
+        events = sorted({a.event for s in alerted for a in risk[id(s)].alerts})
+        rows.append(("Weather", Text(f"{len(alerted)} stop(s) under active NWS alerts: " + ", ".join(events),
+                                     style="yellow")))
+    else:
+        rows.append(("Weather", Text("no active NWS alerts at any stop", style="green")))
+    if args.priority:
+        count, due = args.priority
+        rows.append(("Priority", f"{count} declared-area stop(s) due by {format_clock(due)} "
+                                 f"(within {args.fema_within:g} h)"))
+    return rows
+
+
+def print_flags(console: Console, args, located: List[Stop]) -> None:
+    risk = getattr(args, "risk", None)
+    if not risk:
+        return
+    flagged = [s for s in located[1:] if risk[id(s)].flagged]
+    if not flagged:
+        return
+    from rich.table import Table
+    t = Table(title="Disaster and weather flags", title_style="bold red", header_style="bold")
+    for col in ("Stop", "County", "FEMA declaration", "NWS alerts"):
+        t.add_column(col, overflow="fold")
+    for s in flagged:
+        r = risk[id(s)]
+        decl = "; ".join(sorted({f"{d.label} ({', '.join(d.programs) or 'no programs listed'})"
+                                 for d in r.declarations}))
+        alerts = ", ".join(sorted({f"{a.event} ({a.severity})" for a in r.alerts}))
+        t.add_row(s.name, county_name(r.county) if r.county else "", decl, alerts)
+    console.print(t)
+    console.print(Text.from_markup("[dim]FEMA: OpenFEMA disaster declarations. Weather: National Weather "
+                                   "Service active alerts. Programs: IH = Individuals & Households, IA = Individual "
+                                   "Assistance, PA = Public Assistance, HM = Hazard Mitigation.[/dim]"))
+
+
+def fema_overlays(args):
+    risk = getattr(args, "risk", None)
+    if not risk:
+        return []
+    import html as _html
+    overlays = []
+    alerts = [a for a in getattr(args, "alerts", []) if a.geometry]
+    if alerts:
+        overlays.append(MapOverlay("NWS weather alerts", "#d62828", {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "geometry": a.geometry, "properties": {
+                "popup": f"<b>{_html.escape(a.event)}</b> ({_html.escape(a.severity)})<br>{_html.escape(a.headline)}"}}
+            for a in alerts]}))
+    declared = {}
+    for r in risk.values():
+        for d in r.declarations:
+            declared.setdefault(d.fips, set()).add(d.label)
+    pts = []
+    for fips, labels in sorted(declared.items()):
+        c = counties().get(fips)
+        if c:
+            pts.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [c[3], c[2]]},
+                        "properties": {"popup": f"<b>{_html.escape(c[0])}, {c[1]}</b><br>"
+                                                + "<br>".join(_html.escape(l) for l in sorted(labels))}})
+    if pts:
+        overlays.append(MapOverlay("FEMA-declared counties (stops' counties)", "#7a1f1f",
+                                   {"type": "FeatureCollection", "features": pts}))
+    return overlays
+
+
+def disasters(args, console: Console) -> int:
+    from rich.table import Table
+    try:
+        with console.status("Getting FEMA disaster declarations…"):
+            decls = open_declarations(args.state, days=args.days, number=args.number)
+    except DisasterDataError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        return 1
+    if not decls:
+        where = f" in {', '.join(s.upper() for s in args.state)}" if args.state else ""
+        console.print(f"No open FEMA declarations{where} in the last {args.days} days." if args.number is None
+                      else f"No FEMA disaster number {args.number}.")
+        return 0
+    groups = group_by_disaster(decls)
+    t = Table(title="FEMA disaster declarations", title_style="bold", header_style="bold")
+    for col, j in (("Disaster", "left"), ("Type", "left"), ("Incident", "left"), ("State", "left"),
+                   ("Declared", "right"), ("Areas", "right"), ("Programs", "left")):
+        t.add_column(col, justify=j)
+    for code, ds in groups.items():
+        d = ds[0]
+        progs = sorted({p for x in ds for p in x.programs})
+        t.add_row(Text(code, style="bold red"), KINDS.get(d.kind, d.kind), f"{d.incident}: {d.title.title()}",
+                  ", ".join(sorted({x.state for x in ds})), f"{d.declared:%b} {d.declared.day}, {d.declared.year}",
+                  str(len(ds)), ", ".join(progs))
+    console.print(t)
+    if args.number is not None or len(groups) == 1 or args.stops:
+        for code, ds in groups.items():
+            console.print(f"[bold]{code}[/bold] designated areas: " + ", ".join(sorted(x.area for x in ds)))
+    if args.stops:
+        depot_row = None
+        if args.depot:
+            from routekit.geocode import GeocodeError, geocode_one
+            try:
+                hit = geocode_one(args.depot)
+            except GeocodeError as e:
+                console.print(f"[red]Error:[/red] couldn't look up the staging area: {e}")
+                return 1
+            if hit is None:
+                console.print(f"[red]Error:[/red] couldn't find the staging area {args.depot!r}. Include the house "
+                              "number, street, city, state, and ZIP, or give 'lat, lon'.")
+                return 1
+            lat, lon, matched = hit
+            console.print(f"[green]✓[/green] Staging area: [dim]{matched}[/dim]")
+            depot_row = ["Staging area", args.depot, f"{lat:.6f}", f"{lon:.6f}", "depot"]
+        rows, seen = [], set()
+        for d in decls:
+            targets = [d.fips] if not d.statewide else [f for f in counties() if f[:2] == d.fips[:2]]
+            for f in targets:
+                c = counties().get(f)
+                if c and f not in seen:
+                    seen.add(f)
+                    rows.append((f"{c[0]}, {c[1]}", c[2], c[3], d.code))
+        import csv as _csv
+        with open(args.stops, "w", newline="", encoding="utf-8") as fh:
+            w = _csv.writer(fh)
+            w.writerow(["name", "address", "lat", "lon", "note"])
+            if depot_row:
+                w.writerow(depot_row)
+            for name, lat, lon, code in sorted(rows):
+                w.writerow([name, "", f"{lat:.5f}", f"{lon:.5f}", code])
+        console.print(f"[green]Saved {len(rows)} declared counties as relief stops to {args.stops}[/green]")
+        console.print(Text.from_markup(
+            "[dim]Each stop is the county's Census center point, a stand-in until you know the actual "
+            "distribution sites. " + ("The staging area is the depot." if args.depot else
+                                       "Add a staging area with --depot (it becomes the first row).") + "[/dim]"))
+        console.print(f"[dim]Next: routekit plan {args.stops} --fema --truck --trucks 3 --html relief.html[/dim]")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     console = Console()
     if args.command == "plan":
         return plan(args, console)
+    if args.command == "disasters":
+        return disasters(args, console)
     return 2
 
 

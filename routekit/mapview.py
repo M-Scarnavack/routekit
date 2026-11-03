@@ -25,6 +25,7 @@ HEAD_STYLE = "bold bright_white"
 STOP_STYLE = "bold yellow"
 DEPOT_STYLE = "bold magenta"
 LABEL_STYLE = "bright_white"
+FLAG_STYLE = "bold #ff4d4d"
 
 MIN_BASEMAP_SPAN_DEG = 2.0  # below this (city scale) the 1:50m outlines are too coarse to be honest
 MAX_LABELED_STOPS = 75
@@ -118,7 +119,8 @@ class MapScene:
 
     def __init__(self, routes, cols: int = 80, rows: Optional[int] = None,
                  basemap: bool = True, labels: bool = True, names: Optional[List[str]] = None,
-                 shapes: Optional[List[List[List[Tuple[float, float]]]]] = None):
+                 shapes: Optional[List[List[List[Tuple[float, float]]]]] = None,
+                 flagged: Optional[set] = None):
         """`shapes[i][k]` optionally gives the road shape, as (lat, lon) points, of leg k of route i."""
         if routes and isinstance(routes[0], Stop):
             routes = [routes]
@@ -137,6 +139,7 @@ class MapScene:
         self.project = Projection([(s.lat, s.lon) for s in everything], self.width, self.height)
         self.depot_cell = self._cell(self.project(routes[0][0].lat, routes[0][0].lon))
 
+        self.flagged = flagged or set()  # ids of stops to mark (e.g. inside a disaster area)
         self.tracks: List[_Track] = []
         n_labeled = 0
         for i, route in enumerate(routes):
@@ -158,6 +161,7 @@ class MapScene:
                                (names[i] if names else f"Truck {i + 1}"))
             else:
                 track = _Track(path, reached_at, cells, is_stop, ROUTE_STYLE, STOP_STYLE, LABEL_STYLE, "route")
+            track.flag = [id(route[k]) in self.flagged for k in range(n_points)]
             self.tracks.append(track)
             n_labeled += sum(is_stop)
 
@@ -253,7 +257,7 @@ class MapScene:
         for ti, track in enumerate(self.tracks):
             for i, cell in enumerate(track.stop_cells):
                 if track.is_stop[i] and track.reached_at[i] < reached_by_track[ti]:
-                    marks[cell] = ("●", track.stop_style)  # stops draw over the heads
+                    marks[cell] = ("▲", FLAG_STYLE) if track.flag[i] else ("●", track.stop_style)
         marks[self.depot_cell] = ("■", DEPOT_STYLE)
 
         out = Text()
@@ -294,5 +298,7 @@ class MapScene:
                 t.append("12", style=LABEL_STYLE).append(" stop order   ")
             t.append("⠒⠒", style=ROUTE_STYLE).append(" route   ")
         if self.has_basemap:
-            t.append("⠒⠒", style=BASE_STYLE).append(" state lines")
+            t.append("⠒⠒", style=BASE_STYLE).append(" state lines   ")
+        if self.flagged and any(any(tr.flag) for tr in self.tracks):
+            t.append("▲", style=FLAG_STYLE).append(" disaster area or weather alert")
         return t

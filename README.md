@@ -64,7 +64,7 @@ The C950 version only works on one fixed Salt Lake City distance table, and its 
 | **Algorithm** | Nearest neighbor | Nearest neighbor + **2-opt** for one truck; **cheapest feasible insertion + local search** (2-opt, relocate, swap) for fleets |
 | **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, must-ship-together groups, multiple trips per truck, and a driver limit |
 | **Output** | Text menu | Animated terminal map (one color per truck), schedules, and CSV export |
-| **Packaging** | Single script | Installable CLI with 173 automated tests, plus a Claude Code skill |
+| **Packaging** | Single script | Installable CLI with 182 automated tests, plus a Claude Code skill |
 
 ### Head-to-head: the original C950 problem, re-solved by routekit
 
@@ -106,6 +106,16 @@ The script independently re-checks every rule after solving, rather than trustin
 - **Interactive browser map (`--html map.html`).** One self-contained file: OpenStreetMap streets, each truck's route (on real roads with `--roads` or `--truck`), clickable stops with address, arrival time, and window, and a toggle for each truck. Open it, or send it to someone who doesn't use a terminal.
 
   ![routekit's HTML map of a three-truck Chicago plan on real roads](docs/html-map.jpg)
+
+- **Disaster relief mode (FEMA + NWS).** `routekit disasters` lists open FEMA disaster declarations from OpenFEMA (free, no key). With `--stops relief.csv`, it turns a disaster's declared counties into relief stops. `routekit plan … --fema` flags every stop in a declared county or under an active National Weather Service alert, and `--fema-within 8` makes those stops priority deliveries, due within 8 hours. Here, on live data, are three trucks from a Tallahassee staging area to the 15 Florida counties in **DR-4955, Hurricane Isaias**:
+
+  ```bash
+  routekit disasters 4955 --stops relief.csv --depot "3300 Capital Cir NE, Tallahassee, FL"
+  routekit plan relief.csv --fema --fema-within 8 --truck --trucks 3 --capacity 6 \
+      --service 30 --start 6:00 --html relief.html
+  ```
+
+  ![routekit relief plan for Hurricane Isaias: three trucks to 15 declared Florida counties, red-ringed stops in declared areas](docs/relief-map.jpg)
 
 - **Clear failures.** Unmatched addresses and stops that no truck can legally take are listed with how to fix them, never silently dropped.
 
@@ -197,6 +207,18 @@ Art Institute,111 S Michigan Ave Chicago IL 60603,2,9:00 AM,11:00 AM
 | `--no-map` / `--no-animate` / `--no-basemap` / `--no-labels` | Map display options |
 | `-o FILE` | Save the plan, with truck, order, arrival time, and miles, to a CSV |
 | `--html FILE` | Save an interactive map to open in a browser |
+| `--fema` / `--fema-days N` | Flag stops in open FEMA disaster declarations (last N days, default 120) or under active NWS alerts |
+| `--fema-within HOURS` | Make declared-area stops priority deliveries, due within HOURS of the start |
+
+**Disaster declarations:**
+
+```bash
+routekit disasters --state FL                  # open declarations in Florida (last 120 days)
+routekit disasters 4955                        # one disaster and its declared counties
+routekit disasters 4955 --stops relief.csv --depot "STAGING ADDRESS"   # counties → relief stops
+```
+
+Relief stops are each county's Census center point, a stand-in until you know the actual distribution sites. Data: [OpenFEMA](https://www.fema.gov/about/openfema/api) disaster declarations, [NWS](https://www.weather.gov/documentation/services-web-api) active alerts, and the Census geocoder for each stop's county. All are free U.S. government services with no key.
 
 ### Use it from Claude Code
 
@@ -220,7 +242,7 @@ Then just ask: *"Plan routes for deliveries.csv with 3 trucks, 12 stops max each
 
 Without `--roads`, distances are straight-line miles, and road miles run longer (about 34% on the Chicago example). With `--roads`, routekit asks an [OSRM](https://project-osrm.org/) server for the road miles and drive times between every pair of stops. It optimizes on the average of both directions, since one-way streets make A→B differ from B→A and 2-opt assumes symmetry, and it schedules with the real one-way drive times. Results are cached, and requests are spaced a second apart to respect the free demo server's policy. For heavy use, [run your own OSRM](https://github.com/Project-OSRM/osrm-backend) and pass `--osrm-url`.
 
-**Trucks and tolls** come from [Valhalla](https://valhalla.github.io/valhalla/), which has a real truck profile on OpenStreetMap data. The public server allows 100 source×target pairs per request, so the distance table is fetched in 10×10 blocks (4 requests for 15 stops, 25 for 50). Toll *dollar amounts* aren't in OpenStreetMap, so routekit reports toll-road miles. Valhalla flags a whole maneuver as tolled if any part of it is, so treat those miles as approximate. Valhalla's matrix can't apply a hard "no tolls" rule, so `--avoid-tolls` uses the strongest toll avoidance to build the matrix and a hard exclusion for the final routes. If a stop truly can't be reached toll-free, routekit says so.
+**Trucks and tolls** come from [Valhalla](https://valhalla.github.io/valhalla/), which has a real truck profile on OpenStreetMap data. The public server allows 100 source×target pairs per request, so the distance table is fetched in 10×10 blocks (4 requests for 15 stops, 25 for 50). For stops more than about 93 miles apart, the public Valhalla server won't build a truck distance table. routekit then plans on OSRM's road table, which is car-based, truck-routes every final leg through Valhalla, and says so in the summary. Toll *dollar amounts* aren't in OpenStreetMap, so routekit reports toll-road miles. Valhalla flags a whole maneuver as tolled if any part of it is, so treat those miles as approximate. Valhalla's matrix can't apply a hard "no tolls" rule, so `--avoid-tolls` uses the strongest toll avoidance to build the matrix and a hard exclusion for the final routes. If a stop truly can't be reached toll-free, routekit says so.
 
 > **Older Pythons:** the public OSRM and Valhalla servers require TLS 1.3. Some Pythons can't do it, including the 3.9 that ships with macOS. When that happens, routekit automatically sends the request through the system `curl`, which keeps it encrypted. Fleet planning takes under a second for 60 stops and about 15 seconds for 200. Multi-trip, driver-limited plans take about 2 seconds at 120 stops.
 
@@ -234,11 +256,12 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/http.py` | Rate limiting, plus a curl fallback for Pythons without TLS 1.3 |
 | `routekit/mapview.py` | Braille map rendering and animation frames |
 | `routekit/htmlmap.py` | Interactive HTML map (Leaflet + OpenStreetMap) |
+| `routekit/fema.py` | OpenFEMA declarations, NWS alerts, county lookup |
 | `routekit/cli.py` | `routekit plan` command |
 | `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
 | `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
-| `tests/` | 173 pytest tests, including randomized rule verification |
+| `tests/` | 182 pytest tests, including randomized rule verification |
 
 ### Roadmap
 
@@ -250,7 +273,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - [x] Truck routing (height, weight, length, hazmat) and toll reporting and avoidance via Valhalla
 - [x] Interactive HTML map export (`--html`)
 - [ ] PyPI release (as `routekit-cli`; the name `routekit` is taken)
-- [ ] FEMA relief mode: flag and prioritize stops in counties with active OpenFEMA disaster declarations, and overlay NWS weather alerts
+- [x] FEMA relief mode: `routekit disasters`, `--fema`, `--fema-within`, with NWS alerts on both maps
 - [ ] Freight-demand map from the government's FAF5 freight-flow data (live load-board data needs a paid DAT or Truckstop account)
 
 ### Development

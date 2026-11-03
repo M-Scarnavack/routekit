@@ -108,9 +108,11 @@ TEMPLATE = r"""<!doctype html>
   #map { position: absolute; inset: 0; }
   .card { position: absolute; z-index: 1000; background: var(--panel); border: 1px solid var(--border);
           border-radius: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.18); backdrop-filter: blur(6px); }
-  #summary { top: 12px; left: 56px; max-width: min(460px, calc(100vw - 80px)); padding: 10px 14px; }
+  #summary { top: 12px; left: 56px; width: min(510px, calc(100vw - 80px)); max-height: calc(100vh - 40px);
+             overflow-y: auto; padding: 10px 14px; box-sizing: border-box; }
   #summary h1 { font-size: 15px; margin: 0 0 6px; }
-  #summary pre { margin: 0; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  #summary pre { margin: 0; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre;
+                 overflow-x: auto; }
   #summary .foot { margin-top: 6px; color: var(--muted); font-size: 12px; }
   #summary button { float: right; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; }
   #summary.collapsed pre, #summary.collapsed .foot { display: none; }
@@ -178,7 +180,14 @@ L.marker([DATA.depot.lat, DATA.depot.lon], {
 }).bindPopup(`<b>${esc(DATA.depot.name)}</b><div class="d">Depot: trucks start and end here</div>`).addTo(map);
 
 if (Object.keys(layers).length > 1) L.control.layers(null, layers, { collapsed: false }).addTo(map);
-map.fitBounds(bounds.pad(0.08));
+const card = document.getElementById("summary");
+function fit() {
+  const wide = window.innerWidth > 900;  // keep routes out from under the summary card
+  map.fitBounds(bounds, wide ? { paddingTopLeft: [card.offsetWidth + 70, 30], paddingBottomRight: [30, 30] }
+                             : { padding: [30, 30] });
+}
+fit();
+card.querySelector("button").addEventListener("click", () => setTimeout(fit, 0));
 </script>
 </body>
 </html>

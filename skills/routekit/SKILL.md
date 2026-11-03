@@ -85,6 +85,13 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 | `-o FILE` | Save the ordered plan (truck, order, arrival time, miles) |
 | `--html FILE` | Save an interactive browser map; offer it when the user wants to see or share the plan |
 
+## Disaster relief (FEMA)
+
+- `routekit disasters --state FL` lists open FEMA declarations, and `routekit disasters 4955` shows one disaster's counties.
+- `routekit disasters 4955 --stops relief.csv --depot "STAGING ADDRESS"` writes declared counties as stops (county center points). Tell the user these are stand-ins for the real distribution sites.
+- Add `--fema` to any `plan` to flag stops in declared counties or under NWS alerts. Add `--fema-within HOURS` to make those stops priority deliveries.
+- Report the disaster numbers, types, and programs (IH, IA, PA, HM) and any NWS alerts by stop. Don't overstate: a FEMA declaration means federal assistance is authorized for that county, not that every road there is passable.
+
 ## 5. Read the output and report back
 
 - **Summary panel:** total miles, the improvement from local search, trucks used, last truck back, windows met.

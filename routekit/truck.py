@@ -86,12 +86,19 @@ def valhalla_url(override: Optional[str] = None) -> str:
     return (override or os.environ.get("ROUTEKIT_VALHALLA_URL") or DEFAULT_VALHALLA).rstrip("/")
 
 
+class MatrixRangeError(RoadError):
+    """The server's distance table won't cover points this far apart (the public server caps it at 150 km)."""
+
+
 def _post(session, url: str, body: dict) -> dict:
     try:
         data = request_json("POST", url, body=body, session=session)
     except HttpError as e:
         raise RoadError(str(e)) from None
     if "error" in data:
+        if "max distance" in str(data["error"]).lower() and url.endswith("/sources_to_targets"):
+            raise MatrixRangeError(f"Valhalla's distance table only covers points within about 93 miles of "
+                                   f"each other on this server ({data['error']})")
         raise RoadError(f"Valhalla couldn't route these points: {data['error']}")
     return data
 
