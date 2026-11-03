@@ -64,7 +64,7 @@ The C950 version only works on one fixed Salt Lake City distance table, and its 
 | **Algorithm** | Nearest neighbor | Nearest neighbor + **2-opt** for one truck; **cheapest feasible insertion + local search** (2-opt, relocate, swap) for fleets |
 | **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, must-ship-together groups, multiple trips per truck, and a driver limit |
 | **Output** | Text menu | Animated terminal map (one color per truck), schedules, and CSV export |
-| **Packaging** | Single script | Installable CLI with 160 automated tests, plus a Claude Code skill |
+| **Packaging** | Single script | Installable CLI with 169 automated tests, plus a Claude Code skill |
 
 ### Head-to-head: the original C950 problem, re-solved by routekit
 
@@ -100,6 +100,7 @@ The script independently re-checks every rule after solving, rather than trustin
 - **Route any U.S. addresses.** Give it a CSV with an `address` column (or `street`/`city`/`state`/`zip`, or `lat`/`lon`), and routekit geocodes it through the [U.S. Census Bureau batch geocoder](https://geocoding.geo.census.gov/), with no API key.
 - **Plan a fleet.** `--trucks`, `--capacity`, `--trips` (trucks can come back and go out again), `--drivers` (at most this many trucks out at once), and optional `deadline`, `earliest`, `ready`, `truck`, and `group` columns. On the Chicago fleet example, local search cuts the initial plan from 54.6 to 36.8 miles (−33%), with every time window met.
 - **Real road distances (`--roads`).** Road miles and drive times from OpenStreetMap via [OSRM](https://project-osrm.org/), free with no API key, and the map traces the actual streets. On the Chicago example, road miles run about 34% longer than straight-line.
+- **Truck routing and tolls.** `--truck` routes for a tractor-trailer, or give `--height`, `--weight`, `--length`, and `--hazmat`, so low bridges, weight limits, and hazmat restrictions are respected. Every leg shows its toll-road miles. `--avoid-tolls` stays off toll roads and reports exactly what that costs: on a Chicago–Gary–O'Hare–Joliet–Naperville loop, **+6.7 mi and +43 min**. This uses the free [Valhalla](https://valhalla.github.io/valhalla/) server run by FOSSGIS.
 - **2-opt optimization** for single routes: the 30-city demo drops from **11,737 to 10,139 miles (−13.6%)**.
 - **Animated terminal map.** Routes draw themselves over U.S. state outlines from Natural Earth, with one color per truck and every stop numbered.
 - **Clear failures.** Unmatched addresses and stops that no truck can legally take are listed with how to fix them, never silently dropped.
@@ -146,6 +147,8 @@ routekit plan stops.csv --trucks 3 --capacity 14 \
     --start 8:30 --mph 20 --service 10 -o plan.csv        # fleet with capacities and windows
 routekit plan stops.csv --trucks 3 --drivers 2 --trips 2 \
     --capacity 16 --reload 15                             # trucks go out twice; only 2 drivers
+routekit plan stops.csv --truck --height 13.5 --hazmat    # truck-legal roads, with toll miles per leg
+routekit plan stops.csv --truck --avoid-tolls             # stay off toll roads; see what it costs
 ```
 
 Try the bundled examples: `examples/us_cities.csv` (30 cities), `examples/chicago_deliveries.csv` (real street addresses), and `examples/chicago_fleet.csv` (demands and time windows).
@@ -179,6 +182,10 @@ Art Institute,111 S Michigan Ave Chicago IL 60603,2,9:00 AM,11:00 AM
 | `--service MIN` | Default minutes per stop |
 | `--mph N` | Average speed (default 45; ignored with `--roads`, which uses real drive times) |
 | `--roads` / `--osrm-url URL` | Real road miles, drive times, and street shapes from OSRM (default: the free public server) |
+| `--truck` | Route as a truck on truck-legal roads (default 13.5 ft, 24 tons, 71 ft), with toll miles per leg |
+| `--height FT` / `--weight TONS` / `--length FT` / `--width FT` / `--hazmat` | Truck size and cargo (each implies `--truck`) |
+| `--avoid-tolls` | Stay off toll roads (car or truck) and report the extra miles and minutes |
+| `--valhalla-url URL` | Your own Valhalla server for truck and toll routing |
 | `--depot ADDRESS` | Start and end here instead of the first row |
 | `--one-way` | Single truck only: don't return to the depot |
 | `--no-optimize` | Skip local search and show the construction heuristic alone |
@@ -208,7 +215,9 @@ Then just ask: *"Plan routes for deliveries.csv with 3 trucks, 12 stops max each
 
 Without `--roads`, distances are straight-line miles, and road miles run longer (about 34% on the Chicago example). With `--roads`, routekit asks an [OSRM](https://project-osrm.org/) server for the road miles and drive times between every pair of stops. It optimizes on the average of both directions, since one-way streets make A→B differ from B→A and 2-opt assumes symmetry, and it schedules with the real one-way drive times. Results are cached, and requests are spaced a second apart to respect the free demo server's policy. For heavy use, [run your own OSRM](https://github.com/Project-OSRM/osrm-backend) and pass `--osrm-url`.
 
-> **macOS note:** the public OSRM server requires TLS 1.3, which the Python 3.9 that ships with macOS can't do. routekit will say so. Install a current Python from python.org, or opt into an unencrypted connection with `--osrm-url http://router.project-osrm.org`. Fleet planning takes under a second for 60 stops and about 15 seconds for 200. Multi-trip, driver-limited plans take about 2 seconds at 120 stops.
+**Trucks and tolls** come from [Valhalla](https://valhalla.github.io/valhalla/), which has a real truck profile on OpenStreetMap data. The public server allows 100 source×target pairs per request, so the distance table is fetched in 10×10 blocks (4 requests for 15 stops, 25 for 50). Toll *dollar amounts* aren't in OpenStreetMap, so routekit reports toll-road miles. Valhalla flags a whole maneuver as tolled if any part of it is, so treat those miles as approximate. Valhalla's matrix can't apply a hard "no tolls" rule, so `--avoid-tolls` uses the strongest toll avoidance to build the matrix and a hard exclusion for the final routes. If a stop truly can't be reached toll-free, routekit says so.
+
+> **Older Pythons:** the public OSRM and Valhalla servers require TLS 1.3. Some Pythons can't do it, including the 3.9 that ships with macOS. When that happens, routekit automatically sends the request through the system `curl`, which keeps it encrypted. Fleet planning takes under a second for 60 stops and about 15 seconds for 200. Multi-trip, driver-limited plans take about 2 seconds at 120 stops.
 
 | Path | Purpose |
 |---|---|
@@ -216,12 +225,14 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/vrp.py` | Fleet solver: feasible insertion + local search |
 | `routekit/geocode.py` | Census batch geocoder with cache |
 | `routekit/roads.py` | OSRM road distances, drive times, and street shapes |
+| `routekit/truck.py` | Valhalla truck routing, toll miles, and toll avoidance |
+| `routekit/http.py` | Rate limiting, plus a curl fallback for Pythons without TLS 1.3 |
 | `routekit/mapview.py` | Braille map rendering and animation frames |
 | `routekit/cli.py` | `routekit plan` command |
 | `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
 | `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
-| `tests/` | 160 pytest tests, including randomized rule verification |
+| `tests/` | 169 pytest tests, including randomized rule verification |
 
 ### Roadmap
 
@@ -230,8 +241,11 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - [x] Claude Code skill
 - [x] Multiple trips per truck and driver limits
 - [x] Real road distances and drive times via OSRM (`--roads`)
+- [x] Truck routing (height, weight, length, hazmat) and toll reporting and avoidance via Valhalla
 - [ ] Interactive HTML map export
-- [ ] PyPI release
+- [ ] PyPI release (as `routekit-cli`; the name `routekit` is taken)
+- [ ] FEMA relief mode: flag and prioritize stops in counties with active OpenFEMA disaster declarations, and overlay NWS weather alerts
+- [ ] Freight-demand map from the government's FAF5 freight-flow data (live load-board data needs a paid DAT or Truckstop account)
 
 ### Development
 

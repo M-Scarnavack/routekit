@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from routekit import cli, roads
+from routekit import cli, http, roads
 from routekit.roads import RoadError, decode_polyline, road_geometry, road_matrix, symmetric
 from routekit.stops import Stop
 from routekit.vrp import Fleet, FleetProblem
@@ -10,7 +10,7 @@ from routekit.vrp import Fleet, FleetProblem
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))  # fresh cache per test
-    monkeypatch.setattr(roads, "MIN_INTERVAL", 0.0)       # no politeness delay in tests
+    monkeypatch.setattr(http, "MIN_INTERVAL", 0.0)        # no politeness delay in tests
 
 
 def encode_polyline(points, precision=5):
@@ -47,6 +47,10 @@ class FakeOSRM:
         self.calls = []
 
     def get(self, url, params=None, timeout=None, headers=None):
+        from urllib.parse import parse_qsl, urlsplit
+        parts = urlsplit(url)
+        params = dict(parse_qsl(parts.query))
+        url = f"{parts.scheme}://{parts.netloc}{parts.path}"
         self.calls.append((url, params))
         coords = url.split("/driving/")[1].split(";")
         pts = [tuple(map(float, c.split(","))) for c in coords]  # (lon, lat)
@@ -125,12 +129,28 @@ def test_osrm_error_message():
         road_matrix(_pts(2), "http://osrm.test", session=NoRoute())
 
 
-def test_old_ssl_gets_a_helpful_message():
+def test_old_ssl_without_curl_gets_a_helpful_message(monkeypatch):
     class OldSSL(FakeOSRM):
         def get(self, url, **kw):
             raise requests.exceptions.SSLError("handshake failure")
+    monkeypatch.setattr(http.shutil, "which", lambda name: None)  # no curl to fall back on
     with pytest.raises(RoadError, match="TLS 1.3"):
         road_matrix(_pts(2), "https://osrm.test", session=OldSSL())
+
+
+def test_old_ssl_falls_back_to_curl(monkeypatch):
+    class OldSSL(FakeOSRM):
+        def get(self, url, **kw):
+            raise requests.exceptions.SSLError("handshake failure")
+    seen = {}
+
+    def fake_curl(method, url, body):
+        seen["url"] = url
+        return 200, '{"code": "Ok", "distances": [[0, 1609.344], [1609.344, 0]], "durations": [[0, 60], [60, 0]]}'
+    monkeypatch.setattr(http, "_via_curl", fake_curl)
+    miles, minutes = road_matrix(_pts(2), "https://osrm.test", session=OldSSL())
+    assert miles[0][1] == pytest.approx(1.0) and minutes[0][1] == pytest.approx(1.0)
+    assert seen["url"].startswith("https://osrm.test/table/v1/driving/")  # still HTTPS
 
 
 def test_rate_limit_message():

@@ -19,7 +19,10 @@ from routekit import __version__  # noqa: E402
 from routekit.entry import StopTextError, collect_interactive, offer_save, parse_lines, save_stops  # noqa: E402
 from routekit.geocode import GeocodeError, geocode_stops  # noqa: E402
 from routekit.mapview import MapScene  # noqa: E402
+from rich.text import Text  # noqa: E402
+
 from routekit.roads import RoadError, road_geometry, road_matrix, symmetric  # noqa: E402
+from routekit.truck import Vehicle, truck_matrix, truck_route  # noqa: E402
 from routekit.render import (failures_table, fleet_stops_table, fleet_summary_panel,  # noqa: E402
                              map_panel, stops_table, summary_panel, trucks_table, unassigned_table)
 from routekit.solver import distance_matrix, nearest_neighbor, route_length, two_opt  # noqa: E402
@@ -52,6 +55,20 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Use real road miles and drive times (OSRM, OpenStreetMap data) instead of straight lines.")
     plan.add_argument("--osrm-url", metavar="URL",
                       help="OSRM server for --roads (default: the free public demo server, or $ROUTEKIT_OSRM_URL).")
+    truck = plan.add_argument_group(
+        "truck routing and tolls (Valhalla)",
+        "Real road routing that respects truck restrictions and can avoid tolls, via the free public "
+        "Valhalla server. Any of these options turns it on (no need for --roads).")
+    truck.add_argument("--truck", action="store_true", help="Route as a truck (default size: 13.5 ft, 24 tons, 71 ft).")
+    truck.add_argument("--height", type=float, metavar="FT", help="Truck height in feet (implies --truck).")
+    truck.add_argument("--weight", type=float, metavar="TONS", help="Gross weight in US tons (implies --truck).")
+    truck.add_argument("--length", type=float, metavar="FT", help="Truck length in feet (implies --truck).")
+    truck.add_argument("--width", type=float, metavar="FT", help="Truck width in feet (implies --truck).")
+    truck.add_argument("--hazmat", action="store_true", help="Carrying hazardous materials (implies --truck).")
+    truck.add_argument("--avoid-tolls", action="store_true",
+                       help="Never use toll roads, and report what avoiding them costs.")
+    truck.add_argument("--valhalla-url", metavar="URL",
+                       help="Valhalla server (default: the free public FOSSGIS server, or $ROUTEKIT_VALHALLA_URL).")
     plan.add_argument("--save-stops", type=Path, metavar="FILE",
                       help="Save the stops you typed to a CSV so you can rerun them later.")
     plan.add_argument("--depot", metavar="ADDRESS",
@@ -193,7 +210,19 @@ def plan(args: argparse.Namespace, console: Console) -> int:
 
     minutes = None
     distances = "straight-line miles"
-    if args.roads:
+    args.vehicle = vehicle_from(args)
+    if args.vehicle is not None:
+        try:
+            with console.status("Getting truck road distances from Valhalla…") as status:
+                miles_dir, minutes = truck_matrix(
+                    [(s.lat, s.lon) for s in located], args.vehicle, args.valhalla_url,
+                    progress=lambda k, n: status.update(f"Getting road distances from Valhalla… {k}/{n}"))
+        except RoadError as e:
+            console.print(f"[red]Error:[/red] {e}. Run without truck/toll options for straight-line distances.")
+            return 1
+        d = symmetric(miles_dir)
+        distances = f"road miles · {args.vehicle.describe()} · OpenStreetMap via Valhalla"
+    elif args.roads:
         try:
             with console.status("Getting road distances from OSRM…") as status:
                 miles_dir, minutes = road_matrix(
@@ -220,19 +249,21 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     legs = [d[a][b] for a, b in zip(route, route[1:])]
     leg_minutes = [minutes[a][b] for a, b in zip(route, route[1:])] if minutes else None
 
+    legs_info = route_legs(console, args, [ordered])
     console.print(summary_panel(len(located) - 1, nn_miles, miles, not args.no_optimize,
                                 round_trip, args.mph, len(failed),
-                                sum(leg_minutes) if leg_minutes else None, distances))
+                                sum(leg_minutes) if leg_minutes else None, distances,
+                                extra_rows=legs_info.summary_rows() if legs_info else None))
     if not args.no_map:
         width = max(30, min(console.width - 4, 100))
-        shapes = road_shapes(console, args, [ordered])
         scene = MapScene([ordered], cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
-                         shapes=shapes)
+                         shapes=legs_info.shapes if legs_info else None)
         if args.no_animate or not console.is_terminal:
             console.print(map_panel(scene))
         else:
             animate(scene, console, n_stops=len(located))
-    console.print(stops_table(ordered, legs, round_trip, args.mph, leg_minutes))
+    console.print(stops_table(ordered, legs, round_trip, args.mph, leg_minutes,
+                              legs_info.tolls[0] if legs_info and legs_info.has_tolls_data else None))
     ft = failures_table(failed)
     if ft:
         console.print(ft)
@@ -242,13 +273,69 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     return 0
 
 
-def road_shapes(console: Console, args, routes: List[List[Stop]]):
-    """Road geometry for each leg of each route, or None (straight lines) without --roads or on error."""
-    if not args.roads:
+def vehicle_from(args) -> Optional[Vehicle]:
+    """A Valhalla vehicle if any truck/toll option was given, else None."""
+    dims = (args.height, args.weight, args.length, args.width)
+    if not (args.truck or args.avoid_tolls or args.hazmat or any(v is not None for v in dims)):
+        return None
+    is_truck = args.truck or args.hazmat or any(v is not None for v in dims)
+    return Vehicle(truck=is_truck, height_ft=args.height, weight_tons=args.weight, length_ft=args.length,
+                   width_ft=args.width, hazmat=args.hazmat, avoid_tolls=args.avoid_tolls)
+
+
+class RouteLegs:
+    """Road shapes (and, with Valhalla, toll miles) for each leg of each route."""
+
+    def __init__(self, shapes, tolls=None, avoid_delta=None):
+        self.shapes = shapes            # [route][leg] -> [(lat, lon)]
+        self.tolls = tolls              # [route][leg] -> toll miles, or None (OSRM)
+        self.avoid_delta = avoid_delta  # (extra miles, extra minutes) from avoiding tolls
+
+    @property
+    def has_tolls_data(self) -> bool:
+        return self.tolls is not None
+
+    def summary_rows(self):
+        rows = []
+        if self.tolls is not None:
+            toll_mi = sum(t for route in self.tolls for t in route)
+            n = sum(1 for route in self.tolls for t in route if t > 0.005)
+            if self.avoid_delta is not None:
+                extra_mi, extra_min = self.avoid_delta
+                if n:
+                    rows.append(("Tolls", Text(f"couldn't avoid all of them: ≈{toll_mi:,.1f} mi on {n} leg(s) "
+                                               "have no toll-free road", style="red")))
+                elif extra_mi < 0.05 and extra_min < 0.5:
+                    rows.append(("Tolls", Text("avoided, at no extra cost: this route has no tolls anyway", style="green")))
+                else:
+                    rows.append(("Tolls", Text.assemble(("avoided", "green"),
+                                                        (f"  (+{extra_mi:,.1f} mi, +{extra_min:,.0f} min vs. "
+                                                         "using toll roads, same stop order)", "yellow"))))
+            elif n:
+                rows.append(("Tolls", Text(f"≈{toll_mi:,.1f} mi on toll roads, {n} leg(s); add --avoid-tolls "
+                                           "to compare", style="yellow")))
+            else:
+                rows.append(("Tolls", Text("none on this route", style="green")))
+        return rows
+
+
+def route_legs(console: Console, args, routes: List[List[Stop]]) -> Optional[RouteLegs]:
+    """Fetch road legs for the map and toll report; None for straight lines (or on error)."""
+    if getattr(args, "vehicle", None) is None and not args.roads:
         return None
     try:
-        with console.status("Getting road shapes for the map…"):
-            return [road_geometry([(s.lat, s.lon) for s in r], args.osrm_url) for r in routes]
+        with console.status("Getting road shapes and tolls…" if getattr(args, "vehicle", None)
+                            else "Getting road shapes for the map…"):
+            if args.vehicle is None:
+                return RouteLegs([road_geometry([(s.lat, s.lon) for s in r], args.osrm_url) for r in routes])
+            pts = [[(s.lat, s.lon) for s in r] for r in routes]
+            legs = [truck_route(p, args.vehicle, args.valhalla_url) for p in pts]
+            delta = None
+            if args.vehicle.avoid_tolls:
+                with_tolls = [truck_route(p, args.vehicle, args.valhalla_url, avoid_tolls=False) for p in pts]
+                delta = (sum(l.miles for r in legs for l in r) - sum(l.miles for r in with_tolls for l in r),
+                         sum(l.minutes for r in legs for l in r) - sum(l.minutes for r in with_tolls for l in r))
+            return RouteLegs([[l.shape for l in r] for r in legs], [[l.toll_miles for l in r] for r in legs], delta)
     except RoadError as e:
         console.print(f"[yellow]Note:[/yellow] drawing straight lines on the map ({e}).")
         return None
@@ -270,28 +357,38 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
     with console.status("Planning trucks…"):
         sol = problem.solve(optimize=not args.no_optimize)
 
-    console.print(fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced, distances))
     used = sol.used
+    by_truck: dict = {}
+    for t in sorted(used, key=lambda t: (t.truck, t.trip)):
+        by_truck.setdefault(t.truck, []).append(t)
+    depot = located[0]
+    truck_routes, names = [], []
+    for truck, trips in by_truck.items():
+        route = [depot]
+        for t in trips:
+            route += [located[n] for n in t.stops] + [depot]
+        truck_routes.append(route)
+        names.append(f"Truck {truck}" + (f" ({len(trips)} trips)" if len(trips) > 1 else ""))
+    legs_info = route_legs(console, args, truck_routes) if used else None
+    trip_tolls = None
+    if legs_info and legs_info.has_tolls_data:
+        trip_tolls = {}
+        for (truck, trips), tolls in zip(by_truck.items(), legs_info.tolls):
+            k = 0
+            for t in trips:  # each trip is len(stops) + 1 legs of its truck's chained route
+                trip_tolls[(t.truck, t.trip)] = sum(tolls[k:k + len(t.stops) + 1])
+                k += len(t.stops) + 1
+    console.print(fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced, distances,
+                                      extra_rows=legs_info.summary_rows() if legs_info else None))
     if not args.no_map and used:
         width = max(30, min(console.width - 4, 100))
-        depot = located[0]
-        by_truck: dict = {}
-        for t in sorted(used, key=lambda t: (t.truck, t.trip)):
-            by_truck.setdefault(t.truck, []).append(t)
-        routes, names = [], []
-        for truck, trips in by_truck.items():
-            route = [depot]
-            for t in trips:
-                route += [located[n] for n in t.stops] + [depot]
-            routes.append(route)
-            names.append(f"Truck {truck}" + (f" ({len(trips)} trips)" if len(trips) > 1 else ""))
-        scene = MapScene(routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels, names=names,
-                         shapes=road_shapes(console, args, routes))
+        scene = MapScene(truck_routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
+                         names=names, shapes=legs_info.shapes if legs_info else None)
         if args.no_animate or not console.is_terminal:
             console.print(map_panel(scene))
         else:
             animate(scene, console, n_stops=len(located))
-    console.print(trucks_table(sol, fleet))
+    console.print(trucks_table(sol, fleet, trip_tolls))
     console.print(fleet_stops_table(sol, located, d, fleet))
     for extra in (unassigned_table(sol, located), failures_table(failed)):
         if extra:

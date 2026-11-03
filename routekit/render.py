@@ -15,7 +15,7 @@ from routekit.vrp import Fleet, FleetSolution
 
 
 def stops_table(ordered: List[Stop], legs: List[float], round_trip: bool, mph: float,
-                leg_minutes: Optional[List[float]] = None) -> Table:
+                leg_minutes: Optional[List[float]] = None, leg_tolls: Optional[List[float]] = None) -> Table:
     table = Table(title="Route", title_style="bold", header_style="bold", expand=False)
     table.add_column("#", justify="right", style="dim")
     table.add_column("Stop", style="bold")
@@ -23,6 +23,8 @@ def stops_table(ordered: List[Stop], legs: List[float], round_trip: bool, mph: f
     table.add_column("Leg mi", justify="right")
     table.add_column("Total mi", justify="right")
     table.add_column("Drive", justify="right", style="dim")
+    if leg_tolls is not None:
+        table.add_column("Toll mi", justify="right", style="yellow")
     total = 0.0
     total_min = 0.0
     for i, s in enumerate(ordered):
@@ -32,14 +34,18 @@ def stops_table(ordered: List[Stop], legs: List[float], round_trip: bool, mph: f
         is_return = round_trip and i == len(ordered) - 1
         label = "■ " + s.name if i == 0 else ("↩ " + s.name if is_return else s.name)
         style = DEPOT_STYLE if (i == 0 or is_return) else None
-        table.add_row(
+        row = [
             str(i) if not is_return else "",
             Text(label, style=style or ""),
             s.address or f"{s.lat:.4f}, {s.lon:.4f}",
             f"{leg:,.1f}" if i else "",
             f"{total:,.1f}" if i else "",
             _fmt_hours(total_min / 60) if i else "",
-        )
+        ]
+        if leg_tolls is not None:
+            toll = leg_tolls[i - 1] if i else 0.0
+            row.append(f"{toll:,.1f}" if toll > 0.005 else "")
+        table.add_row(*row)
     return table
 
 
@@ -50,7 +56,7 @@ def _fmt_hours(h: float) -> str:
 
 def summary_panel(n_stops: int, nn_miles: float, final_miles: float, optimized: bool,
                   round_trip: bool, mph: float, skipped: int, drive_minutes: Optional[float] = None,
-                  distances: str = "straight-line miles") -> Panel:
+                  distances: str = "straight-line miles", extra_rows=None) -> Panel:
     t = Table.grid(padding=(0, 2))
     t.add_column(style="dim")
     t.add_column()
@@ -66,6 +72,8 @@ def summary_panel(n_stops: int, nn_miles: float, final_miles: float, optimized: 
         t.add_row("Drive time", f"{_fmt_hours(drive_minutes / 60)} on real roads")
     else:
         t.add_row("Est. drive time", f"{_fmt_hours(final_miles / mph)} at {mph:g} mph")
+    for label, value in extra_rows or []:
+        t.add_row(label, value)
     if skipped:
         t.add_row("Skipped", Text(f"{skipped} address(es) could not be located", style="red"))
     return Panel(t, title="[bold]routekit[/bold]", subtitle=distances, border_style="cyan",
@@ -105,7 +113,8 @@ def _window(s: Stop) -> str:
 
 
 def fleet_summary_panel(sol: FleetSolution, fleet: Fleet, stops: List[Stop], optimized: bool,
-                        skipped: int, balanced: bool, distances: str = "straight-line miles") -> Panel:
+                        skipped: int, balanced: bool, distances: str = "straight-line miles",
+                        extra_rows=None) -> Panel:
     t = Table.grid(padding=(0, 2))
     t.add_column(style="dim")
     t.add_column()
@@ -140,6 +149,8 @@ def fleet_summary_panel(sol: FleetSolution, fleet: Fleet, stops: List[Stop], opt
                   and (s.latest is not None or s.earliest is not None))
     if windows:
         t.add_row("Time windows", Text(f"all {windows} met", style="green"))
+    for label, value in extra_rows or []:
+        t.add_row(label, value)
     if sol.unassigned:
         t.add_row("Not delivered", Text(f"{len(sol.unassigned)} stop(s) fit no truck under the rules", style="bold red"))
     else:
@@ -155,11 +166,12 @@ def _trip_label(tr, fleet: Fleet, marker: str = "") -> Text:
     return Text(label, style=truck_style(tr.truck - 1))
 
 
-def trucks_table(sol: FleetSolution, fleet: Fleet) -> Table:
+def trucks_table(sol: FleetSolution, fleet: Fleet, trip_tolls: Optional[dict] = None) -> Table:
     multi = fleet.trips > 1
     t = Table(title="Trips" if multi else "Trucks", title_style="bold", header_style="bold")
     cols = [("Truck", "left")] + ([("Driver", "right")] if fleet.drivers is not None else []) + [
-        ("Stops", "right"), ("Load", "right"), ("Leaves", "right"), ("Back", "right"), ("Miles", "right")]
+        ("Stops", "right"), ("Load", "right"), ("Leaves", "right"), ("Back", "right"), ("Miles", "right")] + (
+        [("Toll mi", "right")] if trip_tolls is not None else [])
     for col, j in cols:
         t.add_column(col, justify=j)
     for tr in sorted(sol.used, key=lambda tr: (tr.depart, tr.truck)):
@@ -168,6 +180,9 @@ def trucks_table(sol: FleetSolution, fleet: Fleet) -> Table:
         if fleet.drivers is not None:
             row.append(str(tr.driver or ""))
         row += [str(len(tr.stops)), load, format_clock(tr.depart), format_clock(tr.finish), f"{tr.miles:,.1f}"]
+        if trip_tolls is not None:
+            toll = trip_tolls.get((tr.truck, tr.trip), 0.0)
+            row.append(Text(f"{toll:,.1f}" if toll > 0.005 else "", style="yellow"))
         t.add_row(*row)
     return t
 

@@ -12,7 +12,8 @@ own OSRM and pass ``--osrm-url`` (or set ``ROUTEKIT_OSRM_URL``).
   drawing on the map.
 
 Results are cached in ``~/.cache/routekit/roads/``, and requests are spaced at
-least a second apart to respect the demo server's usage policy.
+least a second apart to respect the demo server's usage policy (see
+:mod:`routekit.http`, which also handles Pythons too old for TLS 1.3).
 """
 
 from __future__ import annotations
@@ -20,25 +21,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
-from urllib.parse import urlsplit
 
 import requests
 
-from routekit import __version__
 from routekit.geocode import cache_path
+from routekit.http import HttpError, request_json
 
 DEFAULT_OSRM = "https://router.project-osrm.org"
 METERS_PER_MILE = 1609.344
 TABLE_LIMIT = 100       # coordinates per /table request (OSRM's default max-table-size)
 ROUTE_LIMIT = 100       # waypoints per /route request
-MIN_INTERVAL = 1.0      # seconds between requests (demo server policy: about 1 per second)
-TIMEOUT = 60
 
 LatLon = Tuple[float, float]
-_last_request = 0.0
 
 
 class RoadError(RuntimeError):
@@ -70,32 +66,11 @@ def _store(path: Path, value) -> None:
         pass  # caching is best-effort
 
 
-def _get(session: requests.Session, url: str, params: dict) -> dict:
-    global _last_request
-    wait = MIN_INTERVAL - (time.monotonic() - _last_request)
-    if wait > 0:
-        time.sleep(wait)
+def _get(session, url: str, params: dict) -> dict:
     try:
-        resp = session.get(url, params=params, timeout=TIMEOUT,
-                           headers={"User-Agent": f"routekit/{__version__} (+https://github.com/M-Scarnavack/routekit)"})
-        _last_request = time.monotonic()
-        if resp.status_code == 429:
-            raise RoadError("the OSRM server is rate-limiting requests; wait a minute, or use your own "
-                            "server with --osrm-url")
-        data = resp.json()
-    except requests.exceptions.SSLError as e:
-        import ssl
-        raise RoadError(
-            f"couldn't open a secure connection to {urlsplit(url).netloc}. Your Python's SSL "
-            f"library ({ssl.OPENSSL_VERSION}) is probably too old: the public OSRM server requires TLS 1.3, "
-            "which macOS's built-in Python 3.9 can't do. Fix it by installing a current Python from "
-            "python.org, or accept an unencrypted connection with "
-            "--osrm-url http://router.project-osrm.org (your stop locations would be sent in the clear)"
-        ) from e
-    except requests.RequestException as e:
-        raise RoadError(f"couldn't reach the OSRM server ({e})") from e
-    except ValueError:
-        raise RoadError(f"the OSRM server sent an unexpected response (HTTP {resp.status_code})") from None
+        data = request_json("GET", url, params=params, session=session)
+    except HttpError as e:
+        raise RoadError(str(e)) from None
     if data.get("code") != "Ok":
         msg = data.get("message") or data.get("code") or "unknown error"
         raise RoadError(f"OSRM couldn't route these points: {msg}")
