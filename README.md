@@ -4,7 +4,7 @@
 
 I built this delivery-routing program for my **C950 Data Structures and Algorithms II** class at Western Governors University. After finishing the course I kept going and turned it into **routekit**: a command-line tool that plans optimized routes through *any* list of U.S. addresses, for one truck or a whole fleet, and animates them on a map in your terminal. Re-solving the original C950 problem, it honors every special rule, including the two-driver limit, and drives **38% fewer miles** than my class solution.
 
-![routekit animating an optimized 30-city U.S. route in the terminal](docs/demo.gif)
+![routekit animating an optimized 30-city U.S. route in the terminal](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/demo.gif)
 
 - **[Part 1: The C950 assignment](#part-1-the-c950-assignment)**: the original WGUPS project, as submitted
 - **[Part 2: What I've added since](#part-2-what-ive-added-since-routekit)**: routekit, the CLI tool it grew into
@@ -105,7 +105,7 @@ The script independently re-checks every rule after solving, rather than trustin
 - **Animated terminal map.** Routes draw themselves over U.S. state outlines from Natural Earth, with one color per truck and every stop numbered.
 - **Interactive browser map (`--html map.html`).** One self-contained file: OpenStreetMap streets, each truck's route (on real roads with `--roads` or `--truck`), clickable stops with address, arrival time, and window, and a toggle for each truck. Open it, or send it to someone who doesn't use a terminal.
 
-  ![routekit's HTML map of a three-truck Chicago plan on real roads](docs/html-map.jpg)
+  ![routekit's HTML map of a three-truck Chicago plan on real roads](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/html-map.jpg)
 
 - **Disaster relief mode (FEMA + NWS).** `routekit disasters` lists open FEMA disaster declarations from OpenFEMA (free, no key). With `--stops relief.csv`, it turns a disaster's declared counties into relief stops. `routekit plan … --fema` flags every stop in a declared county or under an active National Weather Service alert, and `--fema-within 8` makes those stops priority deliveries, due within 8 hours. Here, on live data, are three trucks from a Tallahassee staging area to the 15 Florida counties in **DR-4955, Hurricane Isaias**:
 
@@ -115,13 +115,13 @@ The script independently re-checks every rule after solving, rather than trustin
       --service 30 --start 6:00 --html relief.html
   ```
 
-  ![routekit relief plan for Hurricane Isaias: three trucks to 15 declared Florida counties, red-ringed stops in declared areas](docs/relief-map.jpg)
+  ![routekit relief plan for Hurricane Isaias: three trucks to 15 declared Florida counties, red-ringed stops in declared areas](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/relief-map.jpg)
 
 - **Live truck locations (Traccar).** `routekit trucks` shows where every truck is: GPS position, speed, heading, and how fresh the fix is. It reads from [Traccar](https://www.traccar.org), free open-source fleet tracking (a GPS server plus a free driver phone app, or any of hundreds of GPS devices). `routekit plan … --start-at-truck "Truck 2"` plans a route from a truck's current position.
 - **Agent tools (MCP server).** `routekit mcp` lets AI agents use routekit as tools: `truck_locations`, `plan_route`, `fema_disasters`, and `geocode_address`. A dispatcher can ask *"Where's truck 2? Send it to Gary, then Joliet by 11, then Naperville, on truck routes"* and the agent finds the truck, plans the route from its live position, and reports arrival times and toll miles.
 - **Freight demand map (FAF5).** `routekit freight` shows where U.S. truck freight picks up and its biggest lanes, from the federal Freight Analysis Framework: 2024 tonnage by origin state, destination state, and commodity. `--from IL` shows the lanes out of Illinois, `--commodity food` narrows it to one commodity, and `--html` draws a heat map.
 
-  ![routekit freight heat map: interstate truck freight by origin state, 2024](docs/freight-map.jpg)
+  ![routekit freight heat map: interstate truck freight by origin state, 2024](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/freight-map.jpg)
 
 - **DAT connector** *(needs DAT API access)*. `routekit dat rate "Chicago, IL" "Atlanta, GA"` gets a RateView lane rate. `routekit dat loads --origin "Chicago, IL"` searches the load board, and `--stops` turns the pickups into stops for `routekit plan`.
 - **Clear failures.** Unmatched addresses and stops that no truck can legally take are listed with how to fix them, never silently dropped.
