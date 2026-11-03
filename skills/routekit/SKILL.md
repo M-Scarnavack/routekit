@@ -78,6 +78,7 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 | `--drivers N` | At most N trucks out at once; drivers switch trucks at the depot |
 | `--reload MIN` | Minutes at the depot between a truck's trips |
 | `--depot ADDRESS` | Use this start/end instead of row 1 |
+| `--roads` | Real road miles and drive times from OSRM (free public server; `--osrm-url` for your own). Use it when the user cares about actual drive times. If it reports a TLS 1.3 / old-SSL error, tell the user their Python is too old for the public server, and offer `--osrm-url http://router.project-osrm.org` (unencrypted) only with their OK |
 | `--offline` | No network; use CSV coordinates or the geocode cache |
 | `-o FILE` | Save the ordered plan (truck, order, arrival time, miles) |
 
@@ -86,6 +87,6 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 - **Summary panel:** total miles, the improvement from local search, trucks used, last truck back, windows met.
 - **"Could not locate"**: the Census geocoder needs a house number + street; landmark names, intersections, PO boxes, and typos fail. Tell the user which rows failed and offer to fix the addresses or add `lat`/`lon` for those rows, then re-run.
 - **"Not delivered"**: no truck could take those stops without breaking a rule. Suggest the specific lever: more `--trucks`, higher `--capacity`, earlier `--start`, higher `--mph`, or a looser deadline. Re-run to confirm.
-- Distances are straight-line (great-circle) miles; real road miles typically run 15–25% higher. Say so when quoting times or miles.
+- Without `--roads`, distances are straight-line (great-circle) miles and real road miles run noticeably higher. Say so when quoting times or miles, or re-run with `--roads`.
 
 Summarize for the user: trucks used, miles, each truck's stop order with arrival times, any skipped or undelivered stops, and where the `-o` file was written.

@@ -109,8 +109,13 @@ class FleetSolution:
 
 
 class FleetProblem:
-    def __init__(self, d: Matrix, stops: Sequence[Stop], fleet: Fleet):
-        """`stops[0]` is the depot; `d` is the miles matrix over the same indices."""
+    def __init__(self, d: Matrix, stops: Sequence[Stop], fleet: Fleet, minutes: Optional[Matrix] = None):
+        """`stops[0]` is the depot; `d` is the miles matrix over the same indices.
+
+        `minutes`, if given, is the drive time between each pair (e.g. from real roads);
+        otherwise drive time is miles at `fleet.mph`.
+        """
+        self.t = minutes
         if fleet.trucks < 1 or fleet.trips < 1:
             raise ValueError("need at least one truck and one trip per truck")
         if fleet.drivers is not None and fleet.drivers < 1:
@@ -171,9 +176,9 @@ class FleetProblem:
             driver: Optional[int] = None) -> Optional[TripPlan]:
         """Drive `route` leaving at `depart`. None if a deadline or the shift end is missed."""
         t, prev, arrivals = depart, 0, []
-        d, mpm = self.d, self.minutes_per_mile
+        d, mpm, tm = self.d, self.minutes_per_mile, self.t
         for n in route:
-            t += d[prev][n] * mpm
+            t += tm[prev][n] if tm is not None else d[prev][n] * mpm
             e = self.early[n]
             if e is not None and t < e:
                 t = e  # wait for the window to open
@@ -183,7 +188,7 @@ class FleetProblem:
             arrivals.append(t)
             t += self.service[n]
             prev = n
-        t += d[prev][0] * mpm
+        t += tm[prev][0] if tm is not None else d[prev][0] * mpm
         if self.fleet.end is not None and route and t > self.fleet.end + EPS:
             return None
         load = sum(self.demand[n] for n in route)
@@ -482,5 +487,5 @@ class FleetProblem:
         return sol
 
 
-def solve_fleet(d: Matrix, stops: Sequence[Stop], fleet: Fleet) -> FleetSolution:
-    return FleetProblem(d, stops, fleet).solve()
+def solve_fleet(d: Matrix, stops: Sequence[Stop], fleet: Fleet, minutes: Optional[Matrix] = None) -> FleetSolution:
+    return FleetProblem(d, stops, fleet, minutes).solve()

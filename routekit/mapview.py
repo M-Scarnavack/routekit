@@ -117,12 +117,20 @@ class MapScene:
     """
 
     def __init__(self, routes, cols: int = 80, rows: Optional[int] = None,
-                 basemap: bool = True, labels: bool = True, names: Optional[List[str]] = None):
+                 basemap: bool = True, labels: bool = True, names: Optional[List[str]] = None,
+                 shapes: Optional[List[List[List[Tuple[float, float]]]]] = None):
+        """`shapes[i][k]` optionally gives the road shape, as (lat, lon) points, of leg k of route i."""
         if routes and isinstance(routes[0], Stop):
             routes = [routes]
-        routes = [r for r in routes if len(r) >= 2]
+            if shapes is not None:
+                shapes = [shapes]  # a single route's legs
+        keep = [i for i, r in enumerate(routes) if len(r) >= 2]
+        routes = [routes[i] for i in keep]
+        self.shapes = [shapes[i] for i in keep] if shapes else None
         self.fleet = len(routes) > 1
         everything = [s for r in routes for s in r]
+        if self.shapes:  # frame the roads too, not just the stops
+            everything += [Stop("", "", lat, lon) for legs in self.shapes for leg in legs for lat, lon in leg]
         self.cols = cols
         self.rows = rows or fit_rows(everything, cols)
         self.width, self.height = self.cols * 2, self.rows * 4
@@ -137,8 +145,10 @@ class MapScene:
             pts = [self.project(s.lat, s.lon) for s in route]
             path: List[Dot] = [pts[0]]
             reached_at = [0]  # index into path when point k is reached
-            for a, b in zip(pts, pts[1:]):
-                path.extend(bresenham(*a, *b)[1:])
+            for k, (a, b) in enumerate(zip(pts, pts[1:])):
+                via = [self.project(lat, lon) for lat, lon in self.shapes[i][k]] if self.shapes else []
+                for u, v in zip([a] + via, via + [b]):  # stop → road shape → next stop
+                    path.extend(bresenham(*u, *v)[1:])
                 reached_at.append(len(path) - 1)
             cells = [self._cell(p) for p in pts[:n_points]]
             is_stop = [k > 0 and route[k] is not route[0] for k in range(n_points)]

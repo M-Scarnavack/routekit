@@ -19,6 +19,7 @@ from routekit import __version__  # noqa: E402
 from routekit.entry import StopTextError, collect_interactive, offer_save, parse_lines, save_stops  # noqa: E402
 from routekit.geocode import GeocodeError, geocode_stops  # noqa: E402
 from routekit.mapview import MapScene  # noqa: E402
+from routekit.roads import RoadError, road_geometry, road_matrix, symmetric  # noqa: E402
 from routekit.render import (failures_table, fleet_stops_table, fleet_summary_panel,  # noqa: E402
                              map_panel, stops_table, summary_panel, trucks_table, unassigned_table)
 from routekit.solver import distance_matrix, nearest_neighbor, route_length, two_opt  # noqa: E402
@@ -47,6 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("inputs", nargs="*", metavar="STOP",
                       help="A CSV file, or addresses ('Name: address @ 10:30 AM' and 'lat, lon' also work), "
                            "or '-' to read one per line from stdin. Leave empty to type them interactively.")
+    plan.add_argument("--roads", action="store_true",
+                      help="Use real road miles and drive times (OSRM, OpenStreetMap data) instead of straight lines.")
+    plan.add_argument("--osrm-url", metavar="URL",
+                      help="OSRM server for --roads (default: the free public demo server, or $ROUTEKIT_OSRM_URL).")
     plan.add_argument("--save-stops", type=Path, metavar="FILE",
                       help="Save the stops you typed to a CSV so you can rerun them later.")
     plan.add_argument("--depot", metavar="ADDRESS",
@@ -186,9 +191,24 @@ def plan(args: argparse.Namespace, console: Console) -> int:
             console.print(failures_table(failed))
         return 1
 
-    d = distance_matrix([(s.lat, s.lon) for s in located])
+    minutes = None
+    distances = "straight-line miles"
+    if args.roads:
+        try:
+            with console.status("Getting road distances from OSRM…") as status:
+                miles_dir, minutes = road_matrix(
+                    [(s.lat, s.lon) for s in located], args.osrm_url,
+                    progress=lambda k, n: status.update(f"Getting road distances from OSRM… {k}/{n}"))
+        except RoadError as e:
+            console.print(f"[red]Error:[/red] {e}. Run without --roads for straight-line distances.")
+            return 1
+        d = symmetric(miles_dir)  # optimize on the average of both directions
+        distances = "road miles · OpenStreetMap via OSRM"
+    else:
+        d = distance_matrix([(s.lat, s.lon) for s in located])
     if fleet_mode:
-        return plan_fleet(args, console, located, d, failed, start if start is not None else 8 * 60, end)
+        return plan_fleet(args, console, located, d, failed, start if start is not None else 8 * 60, end,
+                          minutes, distances)
 
     round_trip = not args.one_way
     nn = nearest_neighbor(d, round_trip=round_trip)
@@ -198,17 +218,21 @@ def plan(args: argparse.Namespace, console: Console) -> int:
 
     ordered = [located[i] for i in route]
     legs = [d[a][b] for a, b in zip(route, route[1:])]
+    leg_minutes = [minutes[a][b] for a, b in zip(route, route[1:])] if minutes else None
 
     console.print(summary_panel(len(located) - 1, nn_miles, miles, not args.no_optimize,
-                                round_trip, args.mph, len(failed)))
+                                round_trip, args.mph, len(failed),
+                                sum(leg_minutes) if leg_minutes else None, distances))
     if not args.no_map:
         width = max(30, min(console.width - 4, 100))
-        scene = MapScene(ordered, cols=width, basemap=not args.no_basemap, labels=not args.no_labels)
+        shapes = road_shapes(console, args, [ordered])
+        scene = MapScene([ordered], cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
+                         shapes=shapes)
         if args.no_animate or not console.is_terminal:
             console.print(map_panel(scene))
         else:
             animate(scene, console, n_stops=len(located))
-    console.print(stops_table(ordered, legs, round_trip, args.mph))
+    console.print(stops_table(ordered, legs, round_trip, args.mph, leg_minutes))
     ft = failures_table(failed)
     if ft:
         console.print(ft)
@@ -218,8 +242,20 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     return 0
 
 
+def road_shapes(console: Console, args, routes: List[List[Stop]]):
+    """Road geometry for each leg of each route, or None (straight lines) without --roads or on error."""
+    if not args.roads:
+        return None
+    try:
+        with console.status("Getting road shapes for the map…"):
+            return [road_geometry([(s.lat, s.lon) for s in r], args.osrm_url) for r in routes]
+    except RoadError as e:
+        console.print(f"[yellow]Note:[/yellow] drawing straight lines on the map ({e}).")
+        return None
+
+
 def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop],
-               start: float, end: Optional[float]) -> int:
+               start: float, end: Optional[float], minutes=None, distances: str = "straight-line miles") -> int:
     capacity, balanced = args.capacity, False
     if capacity is None and args.trucks > 1 and args.trips == 1 and not any(s.constrained for s in located[1:]):
         capacity = math.ceil(sum(s.demand for s in located[1:]) / args.trucks)
@@ -230,11 +266,11 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
     drivers = args.drivers if args.drivers is not None and args.drivers < args.trucks else None
     fleet = Fleet(trucks=args.trucks, capacity=capacity, start=start, end=end, mph=args.mph, service=args.service,
                   trips=args.trips, drivers=drivers, reload=args.reload)
-    problem = FleetProblem(d, located, fleet)
+    problem = FleetProblem(d, located, fleet, minutes)
     with console.status("Planning trucks…"):
         sol = problem.solve(optimize=not args.no_optimize)
 
-    console.print(fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced))
+    console.print(fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced, distances))
     used = sol.used
     if not args.no_map and used:
         width = max(30, min(console.width - 4, 100))
@@ -249,7 +285,8 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
                 route += [located[n] for n in t.stops] + [depot]
             routes.append(route)
             names.append(f"Truck {truck}" + (f" ({len(trips)} trips)" if len(trips) > 1 else ""))
-        scene = MapScene(routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels, names=names)
+        scene = MapScene(routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels, names=names,
+                         shapes=road_shapes(console, args, routes))
         if args.no_animate or not console.is_terminal:
             console.print(map_panel(scene))
         else:

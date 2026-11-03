@@ -14,7 +14,8 @@ from routekit.stops import Stop, format_clock
 from routekit.vrp import Fleet, FleetSolution
 
 
-def stops_table(ordered: List[Stop], legs: List[float], round_trip: bool, mph: float) -> Table:
+def stops_table(ordered: List[Stop], legs: List[float], round_trip: bool, mph: float,
+                leg_minutes: Optional[List[float]] = None) -> Table:
     table = Table(title="Route", title_style="bold", header_style="bold", expand=False)
     table.add_column("#", justify="right", style="dim")
     table.add_column("Stop", style="bold")
@@ -23,9 +24,11 @@ def stops_table(ordered: List[Stop], legs: List[float], round_trip: bool, mph: f
     table.add_column("Total mi", justify="right")
     table.add_column("Drive", justify="right", style="dim")
     total = 0.0
+    total_min = 0.0
     for i, s in enumerate(ordered):
         leg = legs[i - 1] if i > 0 else 0.0
         total += leg
+        total_min += (leg_minutes[i - 1] if leg_minutes else leg / mph * 60) if i else 0.0
         is_return = round_trip and i == len(ordered) - 1
         label = "■ " + s.name if i == 0 else ("↩ " + s.name if is_return else s.name)
         style = DEPOT_STYLE if (i == 0 or is_return) else None
@@ -35,7 +38,7 @@ def stops_table(ordered: List[Stop], legs: List[float], round_trip: bool, mph: f
             s.address or f"{s.lat:.4f}, {s.lon:.4f}",
             f"{leg:,.1f}" if i else "",
             f"{total:,.1f}" if i else "",
-            _fmt_hours(total / mph) if i else "",
+            _fmt_hours(total_min / 60) if i else "",
         )
     return table
 
@@ -46,7 +49,8 @@ def _fmt_hours(h: float) -> str:
 
 
 def summary_panel(n_stops: int, nn_miles: float, final_miles: float, optimized: bool,
-                  round_trip: bool, mph: float, skipped: int) -> Panel:
+                  round_trip: bool, mph: float, skipped: int, drive_minutes: Optional[float] = None,
+                  distances: str = "straight-line miles") -> Panel:
     t = Table.grid(padding=(0, 2))
     t.add_column(style="dim")
     t.add_column()
@@ -58,10 +62,13 @@ def summary_panel(n_stops: int, nn_miles: float, final_miles: float, optimized: 
         pct = (saved / nn_miles * 100) if nn_miles else 0.0
         t.add_row("After 2-opt", Text.assemble((f"{final_miles:,.1f} mi", "bold green"),
                                                (f"  (−{saved:,.1f} mi, −{pct:.1f}%)", "green")))
-    t.add_row("Est. drive time", f"{_fmt_hours(final_miles / mph)} at {mph:g} mph")
+    if drive_minutes is not None:
+        t.add_row("Drive time", f"{_fmt_hours(drive_minutes / 60)} on real roads")
+    else:
+        t.add_row("Est. drive time", f"{_fmt_hours(final_miles / mph)} at {mph:g} mph")
     if skipped:
         t.add_row("Skipped", Text(f"{skipped} address(es) could not be located", style="red"))
-    return Panel(t, title="[bold]routekit[/bold]", subtitle="straight-line miles", border_style="cyan",
+    return Panel(t, title="[bold]routekit[/bold]", subtitle=distances, border_style="cyan",
                  expand=False)
 
 
@@ -98,7 +105,7 @@ def _window(s: Stop) -> str:
 
 
 def fleet_summary_panel(sol: FleetSolution, fleet: Fleet, stops: List[Stop], optimized: bool,
-                        skipped: int, balanced: bool) -> Panel:
+                        skipped: int, balanced: bool, distances: str = "straight-line miles") -> Panel:
     t = Table.grid(padding=(0, 2))
     t.add_column(style="dim")
     t.add_column()
@@ -139,7 +146,7 @@ def fleet_summary_panel(sol: FleetSolution, fleet: Fleet, stops: List[Stop], opt
         t.add_row("Delivered", Text(f"all {delivered} stops", style="green"))
     if skipped:
         t.add_row("Skipped", Text(f"{skipped} address(es) could not be located", style="red"))
-    return Panel(t, title="[bold]routekit · fleet[/bold]", subtitle="straight-line miles",
+    return Panel(t, title="[bold]routekit · fleet[/bold]", subtitle=distances,
                  border_style="cyan", expand=False)
 
 
