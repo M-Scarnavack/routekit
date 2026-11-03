@@ -64,7 +64,7 @@ The C950 version only works on one fixed Salt Lake City distance table, and its 
 | **Algorithm** | Nearest neighbor | Nearest neighbor + **2-opt** for one truck; **cheapest feasible insertion + local search** (2-opt, relocate, swap) for fleets |
 | **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, must-ship-together groups, multiple trips per truck, and a driver limit |
 | **Output** | Text menu | Animated terminal map (one color per truck), schedules, and CSV export |
-| **Packaging** | Single script | Installable CLI with 210 automated tests, plus a Claude Code skill |
+| **Packaging** | Single script | Installable CLI with 227 automated tests, plus a Claude Code skill |
 
 ### Head-to-head: the original C950 problem, re-solved by routekit
 
@@ -119,6 +119,11 @@ The script independently re-checks every rule after solving, rather than trustin
 
 - **Live truck locations (Traccar).** `routekit trucks` shows where every truck is: GPS position, speed, heading, and how fresh the fix is. It reads from [Traccar](https://www.traccar.org), free open-source fleet tracking (a GPS server plus a free driver phone app, or any of hundreds of GPS devices). `routekit plan … --start-at-truck "Truck 2"` plans a route from a truck's current position.
 - **Agent tools (MCP server).** `routekit mcp` lets AI agents use routekit as tools: `truck_locations`, `plan_route`, `fema_disasters`, and `geocode_address`. A dispatcher can ask *"Where's truck 2? Send it to Gary, then Joliet by 11, then Naperville, on truck routes"* and the agent finds the truck, plans the route from its live position, and reports arrival times and toll miles.
+- **Freight demand map (FAF5).** `routekit freight` shows where U.S. truck freight picks up and its biggest lanes, from the federal Freight Analysis Framework: 2024 tonnage by origin state, destination state, and commodity. `--from IL` shows the lanes out of Illinois, `--commodity food` narrows it to one commodity, and `--html` draws a heat map.
+
+  ![routekit freight heat map: interstate truck freight by origin state, 2024](docs/freight-map.jpg)
+
+- **DAT connector** *(needs DAT API access)*. `routekit dat rate "Chicago, IL" "Atlanta, GA"` gets a RateView lane rate. `routekit dat loads --origin "Chicago, IL"` searches the load board, and `--stops` turns the pickups into stops for `routekit plan`.
 - **Clear failures.** Unmatched addresses and stops that no truck can legally take are listed with how to fix them, never silently dropped.
 
 ### Install
@@ -240,6 +245,32 @@ routekit plan stops.csv --start-at-truck "Truck 2" --truck   # route from where 
 
 There's no public API for an arbitrary truck's location, so positions always come from the fleet's own tracking system. Samsara, Motive, and Geotab customers get API access to their own data, and connectors for them are on the roadmap.
 
+### Freight demand (FAF5)
+
+```bash
+routekit freight                               # where truck freight picks up, by state (2024)
+routekit freight --interstate                  # only freight that crosses state lines
+routekit freight --from IL                     # biggest lanes out of Illinois
+routekit freight --to TX --commodity food      # where food shipped into Texas comes from
+routekit freight --interstate --html freight.html   # heat map + top lanes
+```
+
+Data: [Freight Analysis Framework](https://www.bts.gov/faf) (FAF5.7.1, BTS/FHWA, public domain), truck mode, 2018–2024. routekit bundles a 517 KB summary, which you can rebuild with `scripts/build_freight.py`. It's **annual tonnage**: the long-run shape of where loads originate and go, useful for positioning trucks and choosing lanes. It is *not* live load postings. Most truck tonnage stays within one state (short hauls of gravel, sand, and the like), so use `--interstate` for over-the-road freight.
+
+### DAT loads and rates
+
+```bash
+export ROUTEKIT_DAT_SERVICE_USER=...      # DAT service account (from DAT)
+export ROUTEKIT_DAT_SERVICE_PASSWORD=...
+export ROUTEKIT_DAT_USER=dispatcher@yourco.com
+
+routekit dat check                                        # test the credentials
+routekit dat rate "Chicago, IL" "Atlanta, GA" --equipment reefer
+routekit dat loads --origin "Chicago, IL" --radius 150 --stops loads.csv
+```
+
+> **Status: unverified against the live DAT API.** DAT's API needs a DAT subscription plus an approved API agreement, and its full documentation sits behind DAT's [developer portal](https://developer.dat.com). This connector follows DAT's publicly described API: a two-step login (an organization token, then a user token), RateView lane rates, and load search. Every host is configurable (`ROUTEKIT_DAT_IDENTITY_URL`, `_FREIGHT_URL`, `_ANALYTICS_URL`), responses are parsed defensively, and `--json` includes DAT's raw response, so field names can be adjusted once someone with access tests it. It uses only the API: DAT's terms prohibit scraping its website.
+
 ### Use it from an AI agent (MCP)
 
 `routekit mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, so routekit's features become tools any MCP-compatible agent can call:
@@ -249,6 +280,8 @@ There's no public API for an arbitrary truck's location, so positions always com
 | `truck_locations` | Every tracked truck's live position, speed, heading, and fix age |
 | `plan_route` | Plan one truck or a fleet, from typed stops or a CSV, with any CLI option (roads, truck, tolls, windows, trips, drivers, FEMA, `start_at_truck`, HTML map); returns the stop-by-stop plan as data, plus the text report |
 | `fema_disasters` | Open FEMA declarations; optionally write declared counties as relief stops |
+| `freight_demand` | FAF5 truck freight: top origin states and lanes, by state or commodity |
+| `dat_rate` / `dat_search_loads` | DAT lane rates and load search (with DAT API access) |
 | `geocode_address` | Check an address before routing to it |
 
 Register it with **Claude Code**:
@@ -305,12 +338,14 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/htmlmap.py` | Interactive HTML map (Leaflet + OpenStreetMap) |
 | `routekit/fema.py` | OpenFEMA declarations, NWS alerts, county lookup |
 | `routekit/tracking.py` | Live truck locations (Traccar; provider interface for more) |
+| `routekit/freight.py` | FAF5 freight demand: origins, lanes, heat-map layers |
+| `routekit/dat.py` | DAT RateView and load-search connector (unverified) |
 | `routekit/mcp_server.py` / `routekit/api.py` | MCP server for AI agents, and the structured API it calls |
 | `routekit/cli.py` | `routekit plan` command |
 | `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
 | `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
-| `tests/` | 210 pytest tests, including randomized rule verification |
+| `tests/` | 227 pytest tests, including randomized rule verification |
 
 ### Roadmap
 
@@ -324,10 +359,10 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - [x] Live truck locations (Traccar) and `--start-at-truck`
 - [x] MCP server for AI agents (`routekit mcp`)
 - [ ] Samsara, Motive, and Geotab tracking connectors (needs a customer API token to verify)
-- [ ] DAT load board and rate connector (needs a DAT subscription and an approved API agreement)
+- [x] DAT load board and rate connector (`routekit dat`); still needs testing with real DAT API credentials
 - [ ] PyPI release (as `routekit-cli`; the name `routekit` is taken)
 - [x] FEMA relief mode: `routekit disasters`, `--fema`, `--fema-within`, with NWS alerts on both maps
-- [ ] Freight-demand map from the government's FAF5 freight-flow data (live load-board data needs a paid DAT or Truckstop account)
+- [x] Freight-demand map from FAF5 (`routekit freight`)
 
 ### Development
 
@@ -342,4 +377,4 @@ python scripts/make_demo_video.py examples/us_cities.csv --out demo/
 
 ## License
 
-routekit (`routekit/`, `tests/`, `scripts/`, `skills/`) is MIT licensed; see `LICENSE`. The WGUPS scenario and its data in `data/` belong to Western Governors University's C950 course. The U.S. state outlines come from [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+routekit (`routekit/`, `tests/`, `scripts/`, `skills/`) is MIT licensed; see `LICENSE`. Bundled public-domain data: U.S. state outlines from Natural Earth, county centers from the Census Gazetteer, and truck freight flows from FAF5 (BTS/FHWA). The WGUPS scenario and its data in `data/` belong to Western Governors University's C950 course. The U.S. state outlines come from [Natural Earth](https://www.naturalearthdata.com/) (public domain).

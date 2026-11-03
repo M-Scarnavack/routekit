@@ -98,6 +98,11 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 - To reroute a truck from where it is now: `routekit plan "stop" "stop" … --start-at-truck "Truck 2"` (one way). Add `--truck` for truck-legal roads.
 - If the routekit MCP server is connected, prefer its tools (`truck_locations`, `plan_route`, `fema_disasters`, `geocode_address`) over shelling out. They return structured data.
 
+## Finding freight
+
+- `routekit freight [--from ST] [--to ST] [--commodity NAME] [--interstate] [--json]` gives annual truck freight from FAF5 (2024). Tons are shown as real tons in the table; in `--json` they're THOUSAND tons. It's long-run demand, not today's loads. Say so.
+- `routekit dat rate "City, ST" "City, ST"` and `routekit dat loads --origin "City, ST"` need DAT API credentials. If routekit says they're missing, tell the user DAT API access is required, and never suggest scraping DAT's website. The connector hasn't been verified against the live API yet, so if results look odd, show the `--json` raw response.
+
 ## 5. Read the output and report back
 
 - **Summary panel:** total miles, the improvement from local search, trucks used, last truck back, windows met.

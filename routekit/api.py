@@ -122,3 +122,35 @@ def geocode(address: str) -> Dict[str, Any]:
                                       "Landmark names don't match."}
     lat, lon, matched = hit
     return {"ok": True, "lat": lat, "lon": lon, "matched_address": matched}
+
+
+def freight_demand(origin: Optional[str] = None, destination: Optional[str] = None,
+                   commodity: Optional[str] = None, interstate: bool = False, top: int = 15) -> Dict[str, Any]:
+    """FAF5 truck freight: top origin states and lanes (or lanes from/to a state)."""
+    import argparse
+    from routekit.freight import FreightDataError
+    ns = argparse.Namespace(origin=origin, dest=destination, commodity=commodity, interstate=interstate, top=top)
+    try:
+        out = cli.freight_report(ns)
+    except FreightDataError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, **out}
+
+
+def dat_rate(origin: str, destination: str, equipment: str = "van", contract: bool = False) -> Dict[str, Any]:
+    from routekit.dat import DatClient, DatError
+    try:
+        r = DatClient.from_env().rate(origin, destination, equipment, contract)
+    except DatError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, **r.to_dict()}
+
+
+def dat_search_loads(origin: str, radius: int = 100, equipment: str = "van", destination: Optional[str] = None,
+                     pickup_date: Optional[str] = None, limit: int = 25) -> Dict[str, Any]:
+    from routekit.dat import DatClient, DatError, to_stops
+    try:
+        loads = DatClient.from_env().search_loads(origin, radius, equipment, destination, pickup_date, limit)
+    except DatError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "loads": [ld.to_dict() for ld in loads], "pickup_stops": to_stops(loads)}

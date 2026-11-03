@@ -7,7 +7,8 @@ for example:
 
     claude mcp add routekit -- routekit mcp
 
-Tools: plan_route, truck_locations, fema_disasters, geocode_address.
+Tools: plan_route, truck_locations, fema_disasters, freight_demand, dat_rate, dat_search_loads,
+geocode_address.
 Nothing but protocol messages is ever written to stdout; diagnostics go to stderr.
 """
 
@@ -32,7 +33,9 @@ INSTRUCTIONS = (
     "stops in FEMA disaster areas or under weather alerts. Typical dispatcher flow: truck_locations to see "
     "where trucks are → geocode_address to check any doubtful address → plan_route (start_at_truck to begin "
     "from a truck's live position) → report each truck's stop order and arrival times, and mention anything "
-    "undelivered or skipped. Distances are straight-line unless roads/truck/avoid_tolls is set; say which.")
+    "undelivered or skipped. Distances are straight-line unless roads/truck/avoid_tolls is set; say which. "
+    "For finding freight: freight_demand shows where truck freight moves over a year (FAF5); dat_search_loads and "
+    "dat_rate give live DAT loads and rates when the user has DAT API access.")
 
 _STOP_HELP = ("One stop per string; the FIRST is the depot (start/end) unless depot or start_at_truck is given. "
               "Each string is an address ('233 S Wacker Dr, Chicago, IL'), optionally labeled ('Willis Tower: "
@@ -112,6 +115,52 @@ TOOLS = [
         },
         "annotations": {"title": "FEMA disaster declarations", "readOnlyHint": False, "openWorldHint": True},
         "fn": lambda a: api.disasters(**a),
+    },
+    {
+        "name": "freight_demand",
+        "title": "Freight demand (FAF5)",
+        "description": "Where U.S. truck freight originates and its biggest lanes, from the federal Freight "
+                       "Analysis Framework (FAF5.7.1, latest year 2024). Tons are THOUSAND tons; value is MILLION "
+                       "2017 dollars. Annual tonnage, not live load postings: use it for where to position trucks "
+                       "or which lanes run heavy, and use dat_search_loads for today's loads.",
+        "inputSchema": {"type": "object", "properties": {
+            "origin": {"type": "string", "description": "Lanes out of this state (postal code or name)."},
+            "destination": {"type": "string", "description": "Lanes into this state."},
+            "commodity": {"type": "string", "description": "e.g. 'food', 'machinery', 'gravel', or an SCTG code."},
+            "interstate": {"type": "boolean", "description": "Leave out freight that stays in one state."},
+            "top": {"type": "integer", "default": 15}}, "additionalProperties": False},
+        "annotations": {"title": "Freight demand (FAF5)", "readOnlyHint": True, "openWorldHint": False},
+        "fn": lambda a: api.freight_demand(**a),
+    },
+    {
+        "name": "dat_rate",
+        "title": "DAT lane rate",
+        "description": "Market rate for a lane from DAT RateView (spot by default). Needs DAT API credentials; "
+                       "if it reports missing credentials, tell the user DAT access is required.",
+        "inputSchema": {"type": "object", "properties": {
+            "origin": {"type": "string", "description": "'City, ST' or ZIP"},
+            "destination": {"type": "string", "description": "'City, ST' or ZIP"},
+            "equipment": {"type": "string", "enum": ["van", "reefer", "flatbed"], "default": "van"},
+            "contract": {"type": "boolean", "description": "Contract instead of spot rate."}},
+            "required": ["origin", "destination"], "additionalProperties": False},
+        "annotations": {"title": "DAT lane rate", "readOnlyHint": True, "openWorldHint": True},
+        "fn": lambda a: api.dat_rate(**a),
+    },
+    {
+        "name": "dat_search_loads",
+        "title": "Search DAT loads",
+        "description": "Search the DAT load board near a truck. Returns loads (origin, destination, pickup, rate, "
+                       "miles, broker contact) and pickup_stops ready for plan_route. Needs DAT API credentials.",
+        "inputSchema": {"type": "object", "properties": {
+            "origin": {"type": "string", "description": "'City, ST' or ZIP where the truck is."},
+            "radius": {"type": "integer", "default": 100, "description": "Deadhead radius in miles."},
+            "equipment": {"type": "string", "enum": ["van", "reefer", "flatbed"], "default": "van"},
+            "destination": {"type": "string", "description": "'City, ST' or ZIP; omit for anywhere."},
+            "pickup_date": {"type": "string", "description": "Earliest pickup, YYYY-MM-DD."},
+            "limit": {"type": "integer", "default": 25}},
+            "required": ["origin"], "additionalProperties": False},
+        "annotations": {"title": "Search DAT loads", "readOnlyHint": True, "openWorldHint": True},
+        "fn": lambda a: api.dat_search_loads(**a),
     },
     {
         "name": "geocode_address",

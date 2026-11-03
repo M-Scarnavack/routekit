@@ -45,10 +45,15 @@ class MapTrack:
 
 @dataclass
 class MapOverlay:
-    """A GeoJSON FeatureCollection drawn under the routes, with a popup per feature."""
+    """A GeoJSON FeatureCollection drawn under the routes, with a popup per feature.
+
+    Features may set properties.fill / fillOpacity / weight to style themselves (choropleths, lanes).
+    `fit` includes the overlay in the initial map view.
+    """
     name: str
     color: str
     geojson: dict
+    fit: bool = False
 
 
 def straight_path(points: Sequence[LatLon]) -> List[LatLon]:
@@ -66,19 +71,22 @@ def road_path(points: Sequence[LatLon], legs: Optional[Sequence[Sequence[LatLon]
     return out
 
 
-def write_html(path: Path, title: str, summary_text: str, depot: LatLon, depot_name: str,
+def write_html(path: Path, title: str, summary_text: str, depot: Optional[LatLon], depot_name: str,
                tracks: List[MapTrack], overlays: Optional[List[MapOverlay]] = None,
-               footnote: str = "") -> None:
+               footnote: str = "", view: Optional[Tuple[LatLon, LatLon]] = None) -> None:
+    """`view` = ((south, west), (north, east)) sets the initial map area instead of fitting the data."""
     data = {
         "title": title,
-        "depot": {"lat": depot[0], "lon": depot[1], "name": depot_name},
+        "view": [list(view[0]), list(view[1])] if view else None,
+        "depot": {"lat": depot[0], "lon": depot[1], "name": depot_name} if depot else None,
         "tracks": [{
             "name": t.name, "color": t.color,
             "path": [[round(a, 6), round(b, 6)] for a, b in t.path],
             "stops": [{"lat": s.lat, "lon": s.lon, "label": s.label, "title": s.title,
                        "details": s.details, "flagged": s.flagged} for s in t.stops],
         } for t in tracks],
-        "overlays": [{"name": o.name, "color": o.color, "geojson": o.geojson} for o in overlays or []],
+        "overlays": [{"name": o.name, "color": o.color, "geojson": o.geojson, "fit": o.fit}
+                     for o in overlays or []],
     }
     # Keep "</script>" (or "<!--") in any stop name from ending the script block early.
     payload = json.dumps(data, separators=(",", ":")).replace("<", "\\u003c")
@@ -146,15 +154,18 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 const layers = {};
-const bounds = L.latLngBounds([[DATA.depot.lat, DATA.depot.lon]]);
+const bounds = DATA.depot ? L.latLngBounds([[DATA.depot.lat, DATA.depot.lon]]) : L.latLngBounds([]);
 
 for (const o of DATA.overlays) {
+  const prop = (f, k, d) => (f.properties && f.properties[k] != null) ? f.properties[k] : d;
   const layer = L.geoJSON(o.geojson, {
-    style: { color: o.color, weight: 2, fillColor: o.color, fillOpacity: 0.12 },
+    style: f => ({ color: o.color, weight: prop(f, "weight", 2), opacity: 0.85,
+                   fillColor: prop(f, "fill", o.color), fillOpacity: prop(f, "fillOpacity", 0.12) }),
     pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 7, color: o.color, fillOpacity: 0.5 }),
     onEachFeature: (f, l) => { if (f.properties && f.properties.popup) l.bindPopup(f.properties.popup); }
   }).addTo(map);
   layers[`<span style="color:${o.color}">■</span> ${esc(o.name)}`] = layer;
+  if (o.fit && layer.getBounds().isValid()) bounds.extend(layer.getBounds());
 }
 
 for (const t of DATA.tracks) {
@@ -174,7 +185,7 @@ for (const t of DATA.tracks) {
   layers[`<span style="color:${t.color}">■</span> ${esc(t.name)}`] = group;
 }
 
-L.marker([DATA.depot.lat, DATA.depot.lon], {
+if (DATA.depot) L.marker([DATA.depot.lat, DATA.depot.lon], {
   icon: L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11], html: '<div class="depot-pin"></div>' }),
   title: DATA.depot.name, zIndexOffset: 1000
 }).bindPopup(`<b>${esc(DATA.depot.name)}</b><div class="d">Depot: trucks start and end here</div>`).addTo(map);
@@ -183,8 +194,9 @@ if (Object.keys(layers).length > 1) L.control.layers(null, layers, { collapsed: 
 const card = document.getElementById("summary");
 function fit() {
   const wide = window.innerWidth > 900;  // keep routes out from under the summary card
-  map.fitBounds(bounds, wide ? { paddingTopLeft: [card.offsetWidth + 70, 30], paddingBottomRight: [30, 30] }
-                             : { padding: [30, 30] });
+  const area = DATA.view ? L.latLngBounds(DATA.view) : bounds;
+  map.fitBounds(area, wide ? { paddingTopLeft: [card.offsetWidth + 70, 30], paddingBottomRight: [30, 30] }
+                           : { padding: [30, 30] });
 }
 fit();
 card.querySelector("button").addEventListener("click", () => setTimeout(fit, 0));

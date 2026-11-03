@@ -22,7 +22,8 @@ def test_handshake_and_tool_list():
     assert init["result"]["capabilities"] == {"tools": {"listChanged": False}}
     assert "routekit" in init["result"]["instructions"]
     names = [t["name"] for t in tools["result"]["tools"]]
-    assert names == ["plan_route", "truck_locations", "fema_disasters", "geocode_address"]
+    assert names == ["plan_route", "truck_locations", "fema_disasters", "freight_demand", "dat_rate",
+                     "dat_search_loads", "geocode_address"]
     for t in tools["result"]["tools"]:
         assert t["inputSchema"]["type"] == "object" and "fn" not in t
 

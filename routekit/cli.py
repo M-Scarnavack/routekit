@@ -23,6 +23,9 @@ from rich.text import Text  # noqa: E402
 
 from routekit.fema import (KINDS, DisasterDataError, assess, counties, county_name,  # noqa: E402
                            group_by_disaster, open_declarations)
+from routekit.freight import (FreightDataError, LaneRow, fmt_tons, fmt_value, lane_geojson,  # noqa: E402
+                              resolve_commodity, resolve_state, state_geojson, state_label)
+from routekit.freight import data as fr_data, lanes as fr_lanes, origins as fr_origins  # noqa: E402
 from routekit.htmlmap import (SINGLE_COLOR, TRUCK_COLORS, MapOverlay, MapStop, MapTrack,  # noqa: E402
                               road_path, write_html)
 from routekit.render import _window  # noqa: E402
@@ -128,6 +131,39 @@ def build_parser() -> argparse.ArgumentParser:
                     "Set ROUTEKIT_TRACCAR_URL and ROUTEKIT_TRACCAR_TOKEN (or _USER/_PASSWORD).")
     trk.add_argument("--json", action="store_true", help="Print machine-readable JSON (for scripts and agents).")
     trk.add_argument("--html", type=Path, metavar="FILE", help="Save a browser map of the trucks.")
+    fr = sub.add_parser(
+        "freight", help="Freight demand: where truck freight picks up and where it goes (FAF5 government data).",
+        description="Annual truck freight by state from the Freight Analysis Framework (FAF5.7.1, BTS/FHWA). "
+                    "Shows where loads originate and the biggest lanes. Long-run tonnage, not live load postings.")
+    fr.add_argument("--from", dest="origin", metavar="ST", help="Lanes out of this state (e.g. IL).")
+    fr.add_argument("--to", dest="dest", metavar="ST", help="Lanes into this state.")
+    fr.add_argument("--commodity", metavar="NAME", help="One commodity (e.g. 'food', 'machinery', or an SCTG code).")
+    fr.add_argument("--interstate", action="store_true", help="Leave out freight that starts and ends in the same state.")
+    fr.add_argument("--top", type=int, default=15, metavar="N", help="How many rows (default 15).")
+    fr.add_argument("--html", type=Path, metavar="FILE", help="Save a heat map of the result.")
+    fr.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    dat = sub.add_parser(
+        "dat", help="DAT load board and rates (needs a DAT subscription with API access).",
+        description="DAT connector: lane rates (RateView) and load search, via DAT's API. Needs DAT API "
+                    "credentials in ROUTEKIT_DAT_SERVICE_USER, ROUTEKIT_DAT_SERVICE_PASSWORD, and ROUTEKIT_DAT_USER. "
+                    "Built from DAT's published API description and not yet verified against the live API.")
+    dat_sub = dat.add_subparsers(dest="dat_command", required=True)
+    dat_sub.add_parser("check", help="Test the DAT credentials.")
+    dr = dat_sub.add_parser("rate", help="Market rate for a lane (DAT RateView).")
+    dr.add_argument("origin", help="'City, ST' or ZIP")
+    dr.add_argument("destination", help="'City, ST' or ZIP")
+    dr.add_argument("--equipment", default="van", choices=["van", "reefer", "flatbed"])
+    dr.add_argument("--contract", action="store_true", help="Contract rate instead of spot.")
+    dr.add_argument("--json", action="store_true")
+    dl = dat_sub.add_parser("loads", help="Search the DAT load board.")
+    dl.add_argument("--origin", required=True, help="'City, ST' or ZIP where the truck is.")
+    dl.add_argument("--destination", help="'City, ST' or ZIP (default: anywhere).")
+    dl.add_argument("--radius", type=int, default=100, help="Origin deadhead radius in miles (default 100).")
+    dl.add_argument("--equipment", default="van", choices=["van", "reefer", "flatbed"])
+    dl.add_argument("--date", metavar="YYYY-MM-DD", help="Earliest pickup date.")
+    dl.add_argument("--limit", type=int, default=25)
+    dl.add_argument("--stops", type=Path, metavar="FILE", help="Save the pickups as stops for 'routekit plan'.")
+    dl.add_argument("--json", action="store_true")
     sub.add_parser("mcp", help="Run an MCP server so AI agents (Claude Code, Claude Desktop, ...) can use routekit as tools.",
                    description="Speak the Model Context Protocol over stdin/stdout. Register it with your agent, "
                                "e.g.: claude mcp add routekit -- routekit mcp")
@@ -724,6 +760,183 @@ def trucks(args, console: Console) -> int:
     return 0
 
 
+def freight_report(args) -> dict:
+    """Structured freight-demand result (also used by the MCP tool)."""
+    d = fr_data()
+    year = d["years"][-1]
+    origin = resolve_state(args.origin) if args.origin else None
+    dest = resolve_state(args.dest) if args.dest else None
+    com = resolve_commodity(args.commodity) if args.commodity else None
+    out = {"year": year, "units": "tons are thousand tons; value is million 2017 dollars",
+           "source": d["source"], "commodity": d["commodities"][com] if com else "all"}
+    if origin or dest:
+        rows = fr_lanes(origin, dest, com, interstate=args.interstate or not (origin and dest), top=args.top)
+        out["lanes"] = [{"from": state_label(r.origin), "to": state_label(r.dest), "tons": r.tons,
+                         "value": r.value, "change_since_" + str(d["years"][0]): r.change,
+                         "from_fips": r.origin, "to_fips": r.dest} for r in rows]
+    else:
+        out["origins"] = [{"state": state_label(r.state), "fips": r.state, "tons": r.tons, "share": r.share,
+                           "change_since_" + str(d["years"][0]): r.change, "top_commodity": r.top_commodity}
+                          for r in fr_origins(args.interstate, com, args.top)]
+        out["lanes"] = [{"from": state_label(r.origin), "to": state_label(r.dest), "tons": r.tons,
+                         "value": r.value, "from_fips": r.origin, "to_fips": r.dest}
+                        for r in fr_lanes(None, None, com, interstate=True, top=args.top)]
+    return out
+
+
+def freight(args, console: Console) -> int:
+    import json as _json
+    from rich.table import Table
+    try:
+        rep_ = freight_report(args)
+    except FreightDataError as e:
+        if args.json:
+            print(_json.dumps({"error": str(e)}))
+        else:
+            console.print(f"[red]Error:[/red] {e}")
+        return 2
+    if args.json:
+        print(_json.dumps(rep_, indent=2))
+        return 0
+    year, first = rep_["year"], fr_data()["years"][0]
+    scope = ("interstate " if args.interstate else "") + "truck freight" + (
+        f" · {rep_['commodity']}" if rep_["commodity"] != "all" else "")
+
+    def pct(x):
+        return "" if x is None else Text(f"{x:+.0%}", style="green" if x >= 0 else "red")
+
+    if "origins" in rep_:
+        t = Table(title=f"Where {scope} picks up, {year}", title_style="bold", header_style="bold")
+        one_com = rep_["commodity"] != "all"
+        cols = [("#", "right"), ("Origin state", "left"), ("Tons", "right"), ("Share", "right")]
+        if not one_com:
+            cols += [(f"Since {first}", "right"), ("Top commodity", "left")]
+        for col, j in cols:
+            t.add_column(col, justify=j)
+        for i, r in enumerate(rep_["origins"], start=1):
+            row = [str(i), r["state"], fmt_tons(r["tons"]), f"{r['share']:.1%}"]
+            if not one_com:
+                row += [pct(r[f"change_since_{first}"]), r["top_commodity"]]
+            t.add_row(*row)
+        console.print(t)
+    lt = Table(title=("Biggest interstate lanes" if "origins" in rep_ else
+                      f"Lanes {'from ' + args.origin.upper() if args.origin else ''}"
+                      f"{' to ' + args.dest.upper() if args.dest else ''}") + f", {scope}, {year}",
+               title_style="bold", header_style="bold")
+    for col, j in (("#", "right"), ("From", "left"), ("To", "left"), ("Tons", "right"), ("Value", "right")) + (
+            ((f"Since {first}", "right"),) if "origins" not in rep_ and rep_["commodity"] == "all" else ()):
+        lt.add_column(col, justify=j)
+    for i, r in enumerate(rep_["lanes"], start=1):
+        row = [str(i), r["from"], r["to"], fmt_tons(r["tons"]), fmt_value(r["value"])]
+        if "origins" not in rep_ and rep_["commodity"] == "all":
+            row.append(pct(r.get(f"change_since_{first}")))
+        lt.add_row(*row)
+    console.print(lt)
+    console.print(Text.from_markup(
+        f"[dim]Source: Freight Analysis Framework (FAF5.7.1, BTS/FHWA), {year} estimates, truck mode. Annual "
+        "tonnage shows where freight moves over a year, not today's load postings. Value is in 2017 dollars.[/dim]"))
+
+    if args.html:
+        if "origins" in rep_:
+            values = {r.state: r.tons for r in fr_origins(args.interstate, resolve_commodity(args.commodity)
+                                                           if args.commodity else None, top=60)}
+            shade_label = "originating"
+        else:
+            values = {}
+            for r in rep_["lanes"]:
+                key = r["to_fips"] if args.origin else r["from_fips"]
+                values[key] = values.get(key, 0.0) + r["tons"]
+            shade_label = "shipped to it" if args.origin else "shipped from it"
+        lane_rows = [LaneRow(r["from_fips"], r["to_fips"], r["tons"], r["value"], None)
+                     for r in rep_["lanes"] if r["from_fips"] != r["to_fips"]]
+        overlays = [
+            MapOverlay(f"Tons {shade_label}", "#c0392b", state_geojson(values, lambda f, v: (
+                f"<b>{state_label(f)}</b><br>{fmt_tons(v)} {shade_label}" if v else f"<b>{state_label(f)}</b>")),
+                fit=True),
+            MapOverlay("Top lanes", "#1f4e79", lane_geojson(lane_rows, lambda r: (
+                f"<b>{state_label(r.origin)} → {state_label(r.dest)}</b><br>{fmt_tons(r.tons)}"
+                + (f" · {fmt_value(r.value)}" if r.value else "")))),
+        ]
+        summary = "\n".join(
+            [f"{i:>2}. {r['state']:<22} {fmt_tons(r['tons']):>12}" for i, r in enumerate(rep_.get("origins", [])[:10], 1)]
+            or [f"{i:>2}. {r['from']} → {r['to']}  {fmt_tons(r['tons'])}" for i, r in enumerate(rep_["lanes"][:10], 1)])
+        write_html(args.html, f"routekit · freight demand, {scope}, {year}", summary, None, "", [],
+                   overlays=overlays,
+                   footnote="Freight Analysis Framework (FAF5.7.1, BTS/FHWA): annual truck tonnage, not live loads. "
+                            "Darker states move more freight; line thickness is lane tonnage.",
+                   view=((24.5, -125.0), (49.5, -66.5)))  # lower 48; Alaska and Hawaii are a pan away
+        console.print(f"[green]Saved freight map to {args.html}[/green]")
+    return 0
+
+
+def dat_command(args, console: Console) -> int:
+    import json as _json
+    from rich.table import Table
+    from routekit.dat import DatClient, DatError, to_stops
+    try:
+        client = DatClient.from_env()
+        if args.dat_command == "check":
+            with console.status("Signing in to DAT…"):
+                client.check()
+            console.print("[green]✓ DAT credentials work[/green] (organization and user tokens issued).")
+            return 0
+        if args.dat_command == "rate":
+            with console.status("Looking up the DAT rate…"):
+                r = client.rate(args.origin, args.destination, args.equipment, args.contract)
+            if args.json:
+                print(_json.dumps(r.to_dict(), indent=2, default=str))
+                return 0
+            t = Table.grid(padding=(0, 2))
+            t.add_column(style="dim")
+            t.add_column()
+            money = (lambda x: f"${x:,.2f}" if x is not None else "n/a")
+            t.add_row("Lane", f"{args.origin} → {args.destination} · {r.equipment.lower()} · {r.rate_type.lower()}")
+            t.add_row("Rate per mile", Text(money(r.per_mile), style="bold green"))
+            t.add_row("Range", f"{money(r.low_per_mile)} – {money(r.high_per_mile)} per mile")
+            t.add_row("Per trip", money(r.per_trip))
+            t.add_row("Fuel surcharge", f"{money(r.fuel_per_mile)} per mile")
+            t.add_row("Miles", f"{r.miles:,.0f}" if r.miles else "n/a")
+            if r.timeframe or r.escalation:
+                t.add_row("Based on", " · ".join(x for x in (r.timeframe, r.escalation) if x))
+            from rich.panel import Panel
+            console.print(Panel(t, title="[bold]DAT RateView[/bold]", border_style="cyan", expand=False))
+            return 0
+        # loads
+        with console.status("Searching DAT…"):
+            loads = client.search_loads(args.origin, args.radius, args.equipment, args.destination, args.date, args.limit)
+    except DatError as e:
+        if getattr(args, "json", False):
+            print(_json.dumps({"error": str(e)}))
+        else:
+            console.print(f"[red]Error:[/red] {e}")
+        return 1
+    if args.json:
+        print(_json.dumps({"loads": [ld.to_dict() for ld in loads]}, indent=2, default=str))
+    else:
+        t = Table(title=f"DAT loads near {args.origin} ({args.equipment})", title_style="bold", header_style="bold")
+        for col, j in (("Origin", "left"), ("Destination", "left"), ("Pickup", "left"), ("Miles", "right"),
+                       ("Rate", "right"), ("$/mi", "right"), ("DH", "right"), ("Broker", "left"), ("Phone", "left")):
+            t.add_column(col, justify=j)
+        for ld in loads:
+            t.add_row(ld.origin, ld.destination, (ld.pickup or "")[:10],
+                      f"{ld.trip_miles:,.0f}" if ld.trip_miles else "", f"${ld.rate_usd:,.0f}" if ld.rate_usd else "",
+                      f"${ld.rate_per_mile:,.2f}" if ld.rate_per_mile else "",
+                      f"{ld.deadhead_miles:,.0f}" if ld.deadhead_miles is not None else "",
+                      ld.company or "", ld.phone or "")
+        console.print(t if loads else "No matching loads.")
+    if args.stops and loads:
+        import csv as _csv
+        rows = to_stops(loads)
+        with open(args.stops, "w", newline="", encoding="utf-8") as fh:
+            w = _csv.DictWriter(fh, fieldnames=["name", "address", "lat", "lon"])
+            w.writeheader()
+            w.writerows(rows)
+        if not args.json:
+            console.print(f"[green]Saved {len(rows)} pickups to {args.stops}[/green]  "
+                          f"[dim](add a depot row or --start-at-truck, then: routekit plan {args.stops})[/dim]")
+    return 0
+
+
 def fmt_age(minutes: Optional[float]) -> str:
     if minutes is None:
         return "unknown"
@@ -814,6 +1027,10 @@ def main(argv: Optional[List[str]] = None, console: Optional[Console] = None) ->
         return disasters(args, console)
     if args.command == "trucks":
         return trucks(args, console)
+    if args.command == "freight":
+        return freight(args, console)
+    if args.command == "dat":
+        return dat_command(args, console)
     if args.command == "mcp":
         from routekit.mcp_server import serve
         return serve()
