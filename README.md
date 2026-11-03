@@ -2,7 +2,7 @@
 
 **C950: Data Structures and Algorithms II · Western Governors University · B.S. Computer Science**
 
-I built this delivery-routing program for my **C950 Data Structures and Algorithms II** class at Western Governors University. After finishing the course I kept going and turned the same nearest-neighbor algorithm into **routekit**: a command-line tool that plans an optimized route through *any* list of U.S. addresses and animates it on a map in your terminal.
+I built this delivery-routing program for my **C950 Data Structures and Algorithms II** class at Western Governors University. After finishing the course I kept going and turned it into **routekit**: a command-line tool that plans optimized routes through *any* list of U.S. addresses, for one truck or a whole fleet, and animates them on a map in your terminal. Re-solving the original C950 problem, it honors every special rule and drives **30% fewer miles** than my class solution.
 
 ![routekit animating an optimized 30-city U.S. route in the terminal](docs/demo.gif)
 
@@ -55,83 +55,145 @@ The menu lets you look up any package's status at a specific time, view all pack
 
 ## Part 2: What I've Added Since (routekit)
 
-The C950 version only works on one fixed Salt Lake City distance table. **routekit** takes the same core idea and makes it work anywhere in the U.S.:
+The C950 version only works on one fixed Salt Lake City distance table, and its truck loads were assigned by hand. **routekit** generalizes both: it routes *any* U.S. addresses, and it plans whole fleets automatically under real delivery rules.
 
 | | C950 project | routekit |
 |---|---|---|
 | **Input** | 27 fixed addresses with a precomputed distance table | Any CSV of U.S. addresses, or lat/lon coordinates |
-| **Locations** | Hard-coded | Geocoded with the free U.S. Census geocoder, and cached for offline reuse |
-| **Distances** | Lookup table | Great-circle (haversine) distance matrix computed on the fly |
-| **Algorithm** | Nearest neighbor | Nearest neighbor **+ 2-opt** local search, reporting exactly how many miles it saved |
-| **Output** | Text menu | Animated terminal map over bundled U.S. state outlines, numbered stops, a route table, and CSV export |
-| **Packaging** | Single script | Installable CLI (`pip install -e .`) with 50 automated tests |
+| **Locations** | Hard-coded | Geocoded with the free U.S. Census geocoder, cached for offline reuse |
+| **Algorithm** | Nearest neighbor | Nearest neighbor + **2-opt** for one truck; **cheapest feasible insertion + local search** (2-opt, relocate, swap) for fleets |
+| **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, and must-ship-together groups |
+| **Output** | Text menu | Animated terminal map (one color per truck), schedules, and CSV export |
+| **Packaging** | Single script | Installable CLI with 93 automated tests, plus a Claude Code skill |
+
+### Head-to-head: the original C950 problem, re-solved by routekit
+
+`scripts/solve_wgups.py` feeds the **unchanged** C950 data (`data/Package.csv`, `data/Distance.csv`) to routekit's fleet solver, converting every special note into a rule:
+
+| C950 note | routekit rule |
+|---|---|
+| "Can only be on truck 2" | `truck = 2` |
+| "Delayed on flight, will not arrive until 9:05 am" | `ready = 9:05 AM` |
+| "Must be delivered with 13, 15" | same `group` |
+| Package 9 "Wrong address listed" | corrected address, `ready = 10:20 AM` |
+| 9:00 / 10:30 AM deadlines | `deadline` |
+
+| | Original C950 solution | routekit |
+|---|---|---|
+| Special notes honored | Package 9 only | **All of them** |
+| Deadlines met | 14 of 14 | **14 of 14** (tightest by 6 min) |
+| Drivers needed | 3 trucks out at once | **2**, which matches WGUPS's two drivers |
+| Miles, counted like the original (no return legs) | 116 | **80.7** (−30%) |
+| Miles including every drive back to the hub | not counted | **89.3** |
+
+```bash
+python scripts/solve_wgups.py
+```
+
+The script independently re-checks every rule after solving, rather than trusting the solver.
 
 ### New capabilities
 
 - **Route any U.S. addresses.** Give it a CSV with an `address` column (or `street`/`city`/`state`/`zip`, or `lat`/`lon`), and routekit geocodes it through the [U.S. Census Bureau batch geocoder](https://geocoding.geo.census.gov/), with no API key.
-- **2-opt optimization.** After nearest neighbor builds a route, 2-opt repeatedly reverses segments to remove crossings. On the 30-city demo it cuts the route from **11,737 to 10,139 miles (−13.6%)**.
-- **Animated terminal map.** The route draws itself leg by leg in braille characters over U.S. state outlines from Natural Earth, with every stop numbered in driving order.
-- **Real-world input handling.** Unmatched addresses are reported and skipped, geocoding results are cached, and the optimized stop order exports to CSV.
+- **Plan a fleet.** `--trucks`, `--capacity`, and optional `deadline`, `earliest`, `ready`, `truck`, and `group` columns. On the Chicago fleet example, local search cuts the initial plan from 54.6 to 36.8 miles (−33%), with every time window met.
+- **2-opt optimization** for single routes: the 30-city demo drops from **11,737 to 10,139 miles (−13.6%)**.
+- **Animated terminal map.** Routes draw themselves over U.S. state outlines from Natural Earth, with one color per truck and every stop numbered.
+- **Clear failures.** Unmatched addresses and stops that no truck can legally take are listed with how to fix them, never silently dropped.
 
-### Install and run
+### Install
 
 ```bash
-git clone https://github.com/M-Scarnavack/Nearest-Neighbor-Algorithm---Logistics-Project.git
-cd Nearest-Neighbor-Algorithm---Logistics-Project
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-
-routekit plan examples/us_cities.csv              # 30-city coast-to-coast tour
-routekit plan examples/chicago_deliveries.csv     # real Chicago street addresses
-routekit plan stops.csv --one-way -o route.csv    # your own stops, saved to CSV
+pip install "git+https://github.com/M-Scarnavack/Nearest-Neighbor-Algorithm---Logistics-Project.git"
+routekit --version
 ```
+
+Requires Python 3.9+. To work on the code instead, clone the repo and run `pip install -e ".[dev]"`.
+
+### Use it
+
+```bash
+routekit plan stops.csv                                   # best single-truck order, round trip
+routekit plan stops.csv --one-way -o route.csv            # one way, saved to CSV
+routekit plan stops.csv --trucks 3 --capacity 14 \
+    --start 8:30 --mph 20 --service 10 -o plan.csv        # fleet with capacities and windows
+```
+
+Try the bundled examples: `examples/us_cities.csv` (30 cities), `examples/chicago_deliveries.csv` (real street addresses), and `examples/chicago_fleet.csv` (demands and time windows).
+
+**Your CSV.** The first row is the depot. Column names are case-insensitive:
+
+```csv
+name,address,demand,earliest,deadline
+Warehouse,1100 W Randolph St Chicago IL 60607,,,
+Willis Tower,233 S Wacker Dr Chicago IL 60606,3,,9:30 AM
+Art Institute,111 S Michigan Ave Chicago IL 60603,2,9:00 AM,11:00 AM
+```
+
+| Column | Meaning |
+|---|---|
+| `name` | Stop label (also `stop`, `id`, `customer`) |
+| `address` | One-line address, or `street` + `city` + `state` + `zip`, or `lat` + `lon` |
+| `demand` | Load at this stop (default 1), counted against `--capacity` |
+| `earliest` / `deadline` | Delivery window: `9:00`, `9:00 AM`, `9am`; blank or `EOD` = none |
+| `ready` | Freight isn't at the depot until this time |
+| `service` | Minutes on site (overrides `--service`) |
+| `truck` | Must ride on truck N |
+| `group` | Stops with the same value ride the same truck |
 
 | Option | Description |
 |---|---|
-| `--depot ADDRESS` | Start (and end) here instead of the first row |
-| `--one-way` | Don't return to the depot |
-| `--no-optimize` | Skip 2-opt and show the nearest-neighbor route only |
-| `--mph N` | Average speed for drive-time estimates (default 45) |
-| `--offline` | Use only cached or CSV coordinates; no network |
-| `--no-map` / `--no-animate` | Skip the map, or draw it instantly |
-| `--no-basemap` / `--no-labels` | Hide state outlines or stop numbers |
-| `-o FILE` | Save the ordered route to a CSV |
+| `--trucks N` / `--capacity C` | Fleet size and max load per truck (without `--capacity`, stops split evenly) |
+| `--start TIME` / `--end TIME` | Leave the depot at / be back by (default start 8:00) |
+| `--service MIN` | Default minutes per stop |
+| `--mph N` | Average speed (default 45) |
+| `--depot ADDRESS` | Start and end here instead of the first row |
+| `--one-way` | Single truck only: don't return to the depot |
+| `--no-optimize` | Skip local search and show the construction heuristic alone |
+| `--offline` | Use only CSV coordinates or the geocode cache |
+| `--no-map` / `--no-animate` / `--no-basemap` / `--no-labels` | Map display options |
+| `-o FILE` | Save the plan, with truck, order, arrival time, and miles, to a CSV |
 
-Example input:
+### Use it from Claude Code
 
-```csv
-name,address
-Warehouse,1100 W Randolph St Chicago IL 60607
-Willis Tower,233 S Wacker Dr Chicago IL 60606
-Wrigley Field,1060 W Addison St Chicago IL 60613
+The repo includes a skill, `skills/routekit/SKILL.md`, that teaches Claude Code to install routekit, read your CSV (renaming columns if needed), pick the right options, and explain the result. Install it once:
+
+```bash
+git clone https://github.com/M-Scarnavack/Nearest-Neighbor-Algorithm---Logistics-Project.git
+mkdir -p ~/.claude/skills && cp -R Nearest-Neighbor-Algorithm---Logistics-Project/skills/routekit ~/.claude/skills/
 ```
+
+Then just ask: *"Plan routes for deliveries.csv with 3 trucks, 12 stops max each, all done by noon."*
 
 ### How it works
 
 1. **Geocode:** addresses go to the Census batch geocoder (1,000 per request) and are cached in `~/.cache/routekit/`.
 2. **Distance matrix:** haversine miles between every pair of stops, O(n²).
-3. **Nearest neighbor:** from the depot, always visit the closest unvisited stop. This is the same greedy strategy as the C950 project.
-4. **2-opt:** remove two edges and reconnect the route the other way whenever that's shorter, until no swap helps. This untangles every crossing.
-5. **Draw:** each terminal cell is a 2×4 grid of braille dots, so a 96-column map has 192×120 "pixels". Route legs are rasterized with Bresenham's line algorithm. State outlines appear above roughly 2° of map span; at city scale they'd be misleadingly coarse.
+3. **One truck:** nearest neighbor (the C950 strategy), then **2-opt** removes route crossings until no swap helps.
+4. **Fleet (VRPTW):** stops are inserted tightest deadline first, each into the truck and position that adds the fewest miles *without breaking a rule*. Then local search repeats 2-opt within trucks, **relocate** (move a stop to another truck), and **swap** (exchange stops between trucks) until nothing improves. Every move is checked against capacity, windows, ready times, pins, and groups.
+5. **Draw:** each terminal cell is a 2×4 grid of braille dots. Route legs are rasterized with Bresenham's line algorithm. All trucks animate together, scaled to finish at the same moment.
 
-Distances are straight-line miles; road miles typically run 15–25% longer.
+Distances are straight-line miles; road miles typically run 15–25% longer. Fleet planning takes under a second for 60 stops and about 15 seconds for 200.
 
 | Path | Purpose |
 |---|---|
 | `routekit/solver.py` | Haversine, nearest neighbor, 2-opt |
+| `routekit/vrp.py` | Fleet solver: feasible insertion + local search |
 | `routekit/geocode.py` | Census batch geocoder with cache |
 | `routekit/mapview.py` | Braille map rendering and animation frames |
 | `routekit/cli.py` | `routekit plan` command |
-| `tests/` | 50 pytest tests |
-| `scripts/` | Basemap builder and demo-video renderer |
+| `skills/routekit/` | Claude Code skill |
+| `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
+| `tests/` | 93 pytest tests, including randomized rule verification |
 
 ### Roadmap
 
 - [x] Any-address input, 2-opt, animated terminal map
-- [ ] Multiple trucks with capacities, delivery time windows, and package rules (C950's special notes, solved automatically rather than by hand)
+- [x] Multiple trucks with capacities, time windows, and package rules (the C950 special notes, solved automatically)
+- [x] Claude Code skill
+- [ ] Multiple trips per truck and driver limits
 - [ ] Real road distances via OSRM or OpenRouteService (`--roads`)
 - [ ] Interactive HTML map export
-- [ ] PyPI release and a Claude Code skill
+- [ ] PyPI release
 
 ### Development
 
@@ -146,4 +208,4 @@ python scripts/make_demo_video.py examples/us_cities.csv --out demo/
 
 ## License
 
-routekit (`routekit/`, `tests/`, `scripts/`) is MIT licensed; see `LICENSE`. The WGUPS scenario and its data in `data/` belong to Western Governors University's C950 course. The U.S. state outlines come from [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+routekit (`routekit/`, `tests/`, `scripts/`, `skills/`) is MIT licensed; see `LICENSE`. The WGUPS scenario and its data in `data/` belong to Western Governors University's C950 course. The U.S. state outlines come from [Natural Earth](https://www.naturalearthdata.com/) (public domain).

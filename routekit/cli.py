@@ -18,9 +18,11 @@ from rich.live import Live  # noqa: E402
 from routekit import __version__  # noqa: E402
 from routekit.geocode import GeocodeError, geocode_stops  # noqa: E402
 from routekit.mapview import MapScene  # noqa: E402
-from routekit.render import failures_table, map_panel, stops_table, summary_panel  # noqa: E402
+from routekit.render import (failures_table, fleet_stops_table, fleet_summary_panel,  # noqa: E402
+                             map_panel, stops_table, summary_panel, trucks_table, unassigned_table)
 from routekit.solver import distance_matrix, nearest_neighbor, route_length, two_opt  # noqa: E402
-from routekit.stops import Stop, StopFileError, load_stops, save_route  # noqa: E402
+from routekit.stops import Stop, StopFileError, format_clock, load_stops, parse_clock, save_route  # noqa: E402
+from routekit.vrp import Fleet, FleetProblem, FleetSolution  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +46,19 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--no-basemap", action="store_true", help="Hide the state-outline background.")
     plan.add_argument("--no-labels", action="store_true", help="Hide stop-order numbers on the map.")
     plan.add_argument("-o", "--output", type=Path, metavar="FILE", help="Write the ordered route to a CSV.")
+
+    fleet = plan.add_argument_group(
+        "fleet planning",
+        "Use several trucks, capacities, and time windows. Also enabled automatically when the CSV has "
+        "deadline/earliest/ready/truck/group columns.")
+    fleet.add_argument("--trucks", type=int, default=1, metavar="N", help="Trucks available (default 1).")
+    fleet.add_argument("--capacity", type=float, metavar="C",
+                       help="Max load per truck, in the CSV's 'demand' units (each stop is 1 by default). "
+                            "Without it, stops are split evenly across trucks.")
+    fleet.add_argument("--start", default="8:00", metavar="TIME", help="When trucks leave the depot (default 8:00).")
+    fleet.add_argument("--end", metavar="TIME", help="Trucks must be back by this time.")
+    fleet.add_argument("--service", type=float, default=0.0, metavar="MIN",
+                       help="Minutes spent at each stop (default 0; a 'service' column overrides).")
     return p
 
 
@@ -75,6 +90,20 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     except (OSError, StopFileError) as e:
         console.print(f"[red]Error:[/red] {e}")
         return 2
+    try:
+        start = parse_clock(args.start)
+        end = parse_clock(args.end) if args.end else None
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        return 2
+    if args.trucks < 1:
+        console.print("[red]Error:[/red] --trucks must be at least 1.")
+        return 2
+    fleet_mode = args.trucks > 1 or args.capacity is not None or args.end is not None \
+        or args.service > 0 or any(s.constrained or s.service for s in stops)
+    if fleet_mode and args.one_way:
+        console.print("[red]Error:[/red] --one-way isn't supported for fleet plans yet; trucks return to the depot.")
+        return 2
 
     if args.depot:
         stops.insert(0, Stop(name="Depot", address=args.depot))
@@ -99,8 +128,11 @@ def plan(args: argparse.Namespace, console: Console) -> int:
             console.print(failures_table(failed))
         return 1
 
-    round_trip = not args.one_way
     d = distance_matrix([(s.lat, s.lon) for s in located])
+    if fleet_mode:
+        return plan_fleet(args, console, located, d, failed, start if start is not None else 8 * 60, end)
+
+    round_trip = not args.one_way
     nn = nearest_neighbor(d, round_trip=round_trip)
     nn_miles = route_length(nn, d)
     route = nn if args.no_optimize else two_opt(nn, d, round_trip=round_trip)
@@ -126,6 +158,69 @@ def plan(args: argparse.Namespace, console: Console) -> int:
         save_route(args.output, ordered, legs)
         console.print(f"[green]Saved route to {args.output}[/green]")
     return 0
+
+
+def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop],
+               start: float, end: Optional[float]) -> int:
+    capacity, balanced = args.capacity, False
+    if capacity is None and args.trucks > 1 and not any(s.constrained for s in located[1:]):
+        capacity = math.ceil(sum(s.demand for s in located[1:]) / args.trucks)
+        balanced = True
+    fleet = Fleet(trucks=args.trucks, capacity=capacity, start=start, end=end, mph=args.mph, service=args.service)
+    problem = FleetProblem(d, located, fleet)
+    with console.status("Planning trucks…"):
+        if args.no_optimize:
+            routes, unassigned = problem.construct()
+            trips = [problem.plan(r, t) for t, r in enumerate(routes)]
+            initial = sum(t.miles for t in trips)
+            sol = FleetSolution(trips, sorted(unassigned), initial, initial)
+        else:
+            sol = problem.solve()
+
+    console.print(fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced))
+    used = [t for t in sol.trips if t.stops]
+    if not args.no_map and used:
+        width = max(30, min(console.width - 4, 100))
+        depot = located[0]
+        routes = [[depot] + [located[n] for n in t.stops] + [depot] for t in used]
+        scene = MapScene(routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
+                         names=[f"Truck {t.truck}" for t in used])
+        if args.no_animate or not console.is_terminal:
+            console.print(map_panel(scene))
+        else:
+            animate(scene, console, n_stops=len(located))
+    console.print(trucks_table(sol, fleet))
+    console.print(fleet_stops_table(sol, located, d))
+    for extra in (unassigned_table(sol, located), failures_table(failed)):
+        if extra:
+            console.print(extra)
+    if args.output:
+        save_fleet(args.output, sol, located, d)
+        console.print(f"[green]Saved plan to {args.output}[/green]")
+    return 0
+
+
+def save_fleet(path: Path, sol: FleetSolution, located: List[Stop], d) -> None:
+    import csv
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["truck", "order", "name", "address", "lat", "lon", "arrives", "deadline",
+                    "leg_miles", "truck_miles"])
+        for tr in sol.trips:
+            if not tr.stops:
+                continue
+            prev, total = 0, 0.0
+            for k, (n, arr) in enumerate(zip(tr.stops, tr.arrivals), start=1):
+                s = located[n]
+                total += d[prev][n]
+                w.writerow([tr.truck, k, s.name, s.address, f"{s.lat:.6f}", f"{s.lon:.6f}", format_clock(arr),
+                            format_clock(s.latest), f"{d[prev][n]:.2f}", f"{total:.2f}"])
+                prev = n
+        for n in sol.unassigned:
+            s = located[n]
+            w.writerow(["", "", s.name, s.address, f"{s.lat:.6f}", f"{s.lon:.6f}", "NOT DELIVERED",
+                        format_clock(s.latest), "", ""])
 
 
 def main(argv: Optional[List[str]] = None) -> int:

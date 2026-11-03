@@ -1,0 +1,16 @@
+name,address,lat,lon,demand,earliest,deadline
+Warehouse (West Loop),1100 W Randolph St Chicago IL 60607,41.884454,-87.654519,,,
+Willis Tower,233 S Wacker Dr Chicago IL 60606,41.878920,-87.636602,3,,9:30 AM
+Wrigley Field,1060 W Addison St Chicago IL 60613,41.947273,-87.656132,4,,
+Art Institute,111 S Michigan Ave Chicago IL 60603,41.880652,-87.624171,2,9:00 AM,11:00 AM
+Field Museum,1400 S DuSable Lake Shore Dr Chicago IL 60605,41.868263,-87.617869,2,9:00 AM,10:30 AM
+Lincoln Park Zoo,2001 N Clark St Chicago IL 60614,41.918549,-87.636080,3,,10:00 AM
+Guaranteed Rate Field,333 W 35th St Chicago IL 60616,41.830872,-87.633446,4,,
+Museum of Science and Industry,5700 S Lake Shore Dr Chicago IL 60637,41.791688,-87.580284,2,,10:30 AM
+United Center,1901 W Madison St Chicago IL 60612,41.881295,-87.674218,5,,
+Navy Pier,700 E Grand Ave Chicago IL 60611,41.892186,-87.609930,3,,9:45 AM
+Garfield Park Conservatory,300 N Central Park Ave Chicago IL 60624,41.887644,-87.716236,1,10:00 AM,
+Union Station,225 S Canal St Chicago IL 60606,41.878974,-87.639508,2,,9:00 AM
+Chicago History Museum,1601 N Clark St Chicago IL 60614,41.911251,-87.631619,1,,
+National Museum of Mexican Art,1852 W 19th St Chicago IL 60608,41.855942,-87.672344,2,,11:30 AM
+Adler Planetarium,1300 S Lake Shore Dr Chicago IL 60605,41.866445,-87.613934,1,,
