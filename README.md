@@ -1,5 +1,7 @@
 # 🚚 From Class Project to Routing Tool
 
+[![PyPI](https://img.shields.io/pypi/v/routekit-cli)](https://pypi.org/project/routekit-cli/) [![Tests](https://github.com/M-Scarnavack/routekit/actions/workflows/tests.yml/badge.svg)](https://github.com/M-Scarnavack/routekit/actions/workflows/tests.yml)
+
 **C950: Data Structures and Algorithms II · Western Governors University · B.S. Computer Science**
 
 I built this delivery-routing program for my **C950 Data Structures and Algorithms II** class at Western Governors University. After finishing the course I kept going and turned it into **routekit**: a command-line tool that plans optimized routes through *any* list of U.S. addresses, for one truck or a whole fleet, and animates them on a map in your terminal. Re-solving the original C950 problem, it honors every special rule, including the two-driver limit, and drives **38% fewer miles** than my class solution.
@@ -129,9 +131,11 @@ The script independently re-checks every rule after solving, rather than trustin
 ### Install
 
 ```bash
-pip install "git+https://github.com/M-Scarnavack/routekit.git"
+pip install routekit-cli
 routekit --version
 ```
+
+The package is called `routekit-cli` on [PyPI](https://pypi.org/project/routekit-cli/), but the command is `routekit`.
 
 Requires Python 3.9+. To work on the code instead, clone the repo and run `pip install -e ".[dev]"`.
 
@@ -360,7 +364,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - [x] MCP server for AI agents (`routekit mcp`)
 - [ ] Samsara, Motive, and Geotab tracking connectors (needs a customer API token to verify)
 - [x] DAT load board and rate connector (`routekit dat`); still needs testing with real DAT API credentials
-- [ ] PyPI release (as `routekit-cli`; the name `routekit` is taken)
+- [x] PyPI release: `pip install routekit-cli`
 - [x] FEMA relief mode: `routekit disasters`, `--fema`, `--fema-within`, with NWS alerts on both maps
 - [x] Freight-demand map from FAF5 (`routekit freight`)
 
