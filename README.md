@@ -4,7 +4,12 @@
 
 **C950: Data Structures and Algorithms II · Western Governors University · B.S. Computer Science**
 
-I built this delivery-routing program for my **C950 Data Structures and Algorithms II** class at Western Governors University. After finishing the course I kept going and turned it into **routekit**: a command-line tool that plans optimized routes through *any* list of U.S. addresses, for one truck or a whole fleet, and animates them on a map in your terminal. Re-solving the original C950 problem, it honors every special rule, including the two-driver limit, and drives **38% fewer miles** than my class solution.
+I built this delivery-routing program for my **C950 Data Structures and Algorithms II** class at Western Governors University. After finishing the course I kept going and turned it into **routekit**: a command-line tool that plans optimized routes through *any* list of U.S. addresses, for one truck or a whole fleet, including pickup-and-delivery freight, truck-legal roads, and tolls. It draws the result as an animated map in your terminal or an interactive browser map. Re-solving the original C950 problem, it honors every special rule, including the two-driver limit, and drives **38% fewer miles** than my class solution.
+
+```bash
+pip install routekit-cli
+routekit plan "1100 W Randolph St, Chicago, IL" "233 S Wacker Dr, Chicago, IL @ 10:30 AM" "1060 W Addison St, Chicago, IL"
+```
 
 ![routekit animating an optimized 30-city U.S. route in the terminal](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/demo.gif)
 
@@ -64,9 +69,10 @@ The C950 version only works on one fixed Salt Lake City distance table, and its 
 | **Input** | 27 fixed addresses with a precomputed distance table | Addresses typed in the terminal (checked as you go), or any CSV of U.S. addresses |
 | **Locations** | Hard-coded | Geocoded with the free U.S. Census geocoder, cached for offline reuse |
 | **Algorithm** | Nearest neighbor | Nearest neighbor + **2-opt** for one truck; **cheapest feasible insertion + local search** (2-opt, relocate, swap) for fleets |
-| **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, must-ship-together groups, multiple trips per truck, and a driver limit |
-| **Output** | Text menu | Animated terminal map (one color per truck), schedules, and CSV export |
-| **Packaging** | Single script | Installable CLI with 227 automated tests, plus a Claude Code skill |
+| **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, must-ship-together groups, pickup-and-delivery shipments, multiple trips per truck, and a driver limit |
+| **Roads** | Distance table | Straight-line, real road miles (OSRM), or truck-legal roads with toll miles (Valhalla) |
+| **Output** | Text menu | Animated terminal map (one color per truck), interactive HTML map, schedules, and CSV export |
+| **Packaging** | Single script | On PyPI (`pip install routekit-cli`), 258 automated tests on Python 3.9–3.13, an MCP server for AI agents, and a Claude Code skill |
 
 ### Head-to-head: the original C950 problem, re-solved by routekit
 
@@ -106,7 +112,7 @@ The script independently re-checks every rule after solving, rather than trustin
 - **Truck routing and tolls.** `--truck` routes for a tractor-trailer, or give `--height`, `--weight`, `--length`, and `--hazmat`, so low bridges, weight limits, and hazmat restrictions are respected. Every leg shows its toll-road miles. `--avoid-tolls` stays off toll roads and reports exactly what that costs: on a Chicago–Gary–O'Hare–Joliet–Naperville loop, **+6.7 mi and +43 min**. This uses the free [Valhalla](https://valhalla.github.io/valhalla/) server run by FOSSGIS.
 - **2-opt optimization** for single routes: the 30-city demo drops from **11,737 to 10,139 miles (−13.6%)**.
 - **Animated terminal map.** Routes draw themselves over U.S. state outlines from Natural Earth, with one color per truck and every stop numbered.
-- **Interactive browser map (`--html map.html`).** One self-contained file: OpenStreetMap streets, each truck's route (on real roads with `--roads` or `--truck`), clickable stops with address, arrival time, and window, and a toggle for each truck. Open it, or send it to someone who doesn't use a terminal.
+- **Interactive browser map (`--html map.html`).** One self-contained file: a street, light-gray, or topographic background (Esri, built on OpenStreetMap data), each truck's route (on real roads with `--roads` or `--truck`), clickable stops with address, arrival time, and window, and a toggle for each truck. Pickups are marked, and each stop shows how much freight is aboard after it. Open it, or send it to someone who doesn't use a terminal.
 
   ![routekit's HTML map of a three-truck Chicago plan on real roads](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/html-map.jpg)
 
@@ -121,12 +127,12 @@ The script independently re-checks every rule after solving, rather than trustin
   ![routekit relief plan for Hurricane Isaias: three trucks to 15 declared Florida counties, red-ringed stops in declared areas](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/relief-map.jpg)
 
 - **Live truck locations (Traccar).** `routekit trucks` shows where every truck is: GPS position, speed, heading, and how fresh the fix is. It reads from [Traccar](https://www.traccar.org), free open-source fleet tracking (a GPS server plus a free driver phone app, or any of hundreds of GPS devices). `routekit plan … --start-at-truck "Truck 2"` plans a route from a truck's current position.
-- **Agent tools (MCP server).** `routekit mcp` lets AI agents use routekit as tools: `truck_locations`, `plan_route`, `fema_disasters`, and `geocode_address`. A dispatcher can ask *"Where's truck 2? Send it to Gary, then Joliet by 11, then Naperville, on truck routes"* and the agent finds the truck, plans the route from its live position, and reports arrival times and toll miles.
+- **Agent tools (MCP server).** `routekit mcp` lets AI agents use routekit as tools: `truck_locations`, `plan_route`, `fema_disasters`, `freight_demand`, `dat_rate`, `dat_search_loads`, and `geocode_address`. A dispatcher can ask *"Where's truck 2? Send it to Gary, then Joliet by 11, then Naperville, on truck routes"* and the agent finds the truck, plans the route from its live position, and reports arrival times and toll miles.
 - **Freight demand map (FAF5).** `routekit freight` shows where U.S. truck freight picks up and its biggest lanes, from the federal Freight Analysis Framework: 2024 tonnage by origin state, destination state, and commodity. `--from IL` shows the lanes out of Illinois, `--commodity food` narrows it to one commodity, and `--html` draws a heat map.
 
   ![routekit freight heat map: interstate truck freight by origin state, 2024](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/freight-map.jpg)
 
-- **DAT connector** *(needs DAT API access)*. `routekit dat rate "Chicago, IL" "Atlanta, GA"` gets a RateView lane rate. `routekit dat loads --origin "Chicago, IL"` searches the load board, and `--stops` turns the pickups into stops for `routekit plan`.
+- **DAT connector** *(needs DAT API access)*. `routekit dat rate "Chicago, IL" "Atlanta, GA"` gets a RateView lane rate. `routekit dat loads --origin "Chicago, IL"` searches the load board, and `--stops` saves the loads as pickup → delivery shipments ready for `routekit plan`.
 - **Clear failures.** Unmatched addresses and stops that no truck can legally take are listed with how to fix them, never silently dropped.
 
 ### Install
@@ -179,7 +185,7 @@ routekit plan stops.csv --truck --height 13.5 --hazmat    # truck-legal roads, w
 routekit plan stops.csv --truck --avoid-tolls             # stay off toll roads; see what it costs
 ```
 
-Try the bundled examples: `examples/us_cities.csv` (30 cities), `examples/chicago_deliveries.csv` (real street addresses), and `examples/chicago_fleet.csv` (demands and time windows).
+Try the bundled examples: `examples/us_cities.csv` (30 cities), `examples/chicago_deliveries.csv` (real street addresses), `examples/chicago_fleet.csv` (demands and time windows), and `examples/chicago_shipments.csv` (warehouse deliveries plus pickup → delivery shipments).
 
 **Your CSV.** The first row is the depot. Column names are case-insensitive:
 
@@ -343,18 +349,20 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 
 **Trucks and tolls** come from [Valhalla](https://valhalla.github.io/valhalla/), which has a real truck profile on OpenStreetMap data. The public server allows 100 source×target pairs per request, so the distance table is fetched in 10×10 blocks (4 requests for 15 stops, 25 for 50). For stops more than about 93 miles apart, the public Valhalla server won't build a truck distance table. routekit then plans on OSRM's road table, which is car-based, truck-routes every final leg through Valhalla, and says so in the summary. Toll *dollar amounts* aren't in OpenStreetMap, so routekit reports toll-road miles. Valhalla flags a whole maneuver as tolled if any part of it is, so treat those miles as approximate. Valhalla's matrix can't apply a hard "no tolls" rule, so `--avoid-tolls` uses the strongest toll avoidance to build the matrix and a hard exclusion for the final routes. If a stop truly can't be reached toll-free, routekit says so.
 
-> **Older Pythons:** the public OSRM and Valhalla servers require TLS 1.3. Some Pythons can't do it, including the 3.9 that ships with macOS. When that happens, routekit automatically sends the request through the system `curl`, which keeps it encrypted. Fleet planning takes under a second for 60 stops and about 15 seconds for 200. Multi-trip, driver-limited plans take about 2 seconds at 120 stops.
+> **Older Pythons:** the public OSRM and Valhalla servers require TLS 1.3. Some Pythons can't do it, including the 3.9 that ships with macOS. When that happens, routekit automatically sends the request through the system `curl`, which keeps it encrypted.
+
+**Speed:** fleet planning takes under a second for 60 stops and about 15 seconds for 200. Multi-trip, driver-limited plans take about 2 seconds at 120 stops. With `--roads` or `--truck`, fetching distances from the free public servers (one request per second) usually takes longer than the planning itself. Results are cached, so a repeat run is instant.
 
 | Path | Purpose |
 |---|---|
 | `routekit/solver.py` | Haversine, nearest neighbor, 2-opt |
-| `routekit/vrp.py` | Fleet solver: feasible insertion + local search |
+| `routekit/vrp.py` | Fleet solver: feasible insertion + local search, pickup and delivery, multi-trip, drivers |
 | `routekit/geocode.py` | Census batch geocoder with cache |
 | `routekit/roads.py` | OSRM road distances, drive times, and street shapes |
 | `routekit/truck.py` | Valhalla truck routing, toll miles, and toll avoidance |
 | `routekit/http.py` | Rate limiting, plus a curl fallback for Pythons without TLS 1.3 |
 | `routekit/mapview.py` | Braille map rendering and animation frames |
-| `routekit/htmlmap.py` | Interactive HTML map (Leaflet + OpenStreetMap) |
+| `routekit/htmlmap.py` | Interactive HTML map (Leaflet + Esri basemaps) |
 | `routekit/fema.py` | OpenFEMA declarations, NWS alerts, county lookup |
 | `routekit/tracking.py` | Live truck locations (Traccar; provider interface for more) |
 | `routekit/freight.py` | FAF5 freight demand: origins, lanes, heat-map layers |
@@ -364,7 +372,8 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
 | `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
-| `tests/` | 227 pytest tests, including randomized rule verification |
+| `tests/` | 258 pytest tests, including randomized rule verification |
+| `.github/workflows/` | Tests on every push; publish to PyPI on each GitHub release |
 
 ### Roadmap
 
@@ -385,6 +394,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - [x] Pickup-and-delivery shipments (A → B on the same trip, load tracked along the route)
 - [ ] Driver hours-of-service limits (11-hour driving, 14-hour window, 30-minute break)
 - [ ] Multiple depots (trucks starting from different yards in one plan)
+- [ ] Maximum ride time per shipment (today routekit minimizes miles, so freight can ride longer than needed)
 
 ### Development
 
@@ -399,4 +409,4 @@ python scripts/make_demo_video.py examples/us_cities.csv --out demo/
 
 ## License
 
-routekit (`routekit/`, `tests/`, `scripts/`, `skills/`) is MIT licensed; see `LICENSE`. Bundled public-domain data: U.S. state outlines from Natural Earth, county centers from the Census Gazetteer, and truck freight flows from FAF5 (BTS/FHWA). The WGUPS scenario and its data in `data/` belong to Western Governors University's C950 course. The U.S. state outlines come from [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+routekit (`routekit/`, `tests/`, `scripts/`, `skills/`) is MIT licensed; see `LICENSE`. Bundled public-domain data: U.S. state outlines from [Natural Earth](https://www.naturalearthdata.com/), county centers from the Census Gazetteer, and truck freight flows from FAF5 (BTS/FHWA). Map backgrounds: Esri basemaps, built in part on © OpenStreetMap contributors. The WGUPS scenario and its data in `data/` belong to Western Governors University's C950 course.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "routekit-cli"  # "routekit" on PyPI is an unrelated 2017 project; the command and import stay "routekit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Delivery route planning for U.S. addresses: fleets, truck routing and tolls, FEMA relief, freight demand, and an MCP server for AI agents."
 readme = "README.md"
 requires-python = ">=3.9"
