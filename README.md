@@ -1,8 +1,21 @@
 # 🚚 WGUPS Routing Program
 
-A delivery-routing simulation for the fictional Western Governors University Parcel Service (WGUPS). It plans routes for three trucks and two drivers delivering 40 packages across Salt Lake City, meeting every deadline and special constraint while keeping total distance under 140 miles.
+**C950: Data Structures and Algorithms II · Western Governors University · B.S. Computer Science**
 
-**Result:** all 40 packages delivered on time in **116 total miles**.
+A delivery-routing simulation built as the final project for WGU's C950 Data Structures and Algorithms II course. The scenario is the fictional Western Governors University Parcel Service (WGUPS): plan routes for three trucks and two drivers delivering 40 packages across Salt Lake City, meeting every deadline and special constraint while keeping total distance under 140 miles.
+
+**Result:** all 40 packages delivered on time in **116 total miles**, 24 miles under the 140-mile requirement.
+
+## About the Course
+
+C950 is the second course in WGU's data structures and algorithms sequence. Students design and implement a working solution from scratch, without third-party libraries, and justify their choices of algorithm and data structures. Requirements for this project included:
+
+- Implementing a **custom hash table**, without Python's built-in dictionary, for package storage and lookup
+- Choosing and implementing a **routing algorithm** and analyzing its time and space complexity
+- Building an **interface** that reports every package's status, and each truck's mileage, at any time of day
+- Satisfying real-world constraints: delayed packages, truck-specific packages, grouped deliveries, and a mid-day address correction
+
+The original WGU scenario data (packages, addresses, and the distance table) is in `data/`.
 
 ## Problem Scenario
 
