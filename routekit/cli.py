@@ -210,7 +210,7 @@ def gather_stops(args: argparse.Namespace, console: Console):
         return load_stops(Path(inputs[0])), False
     if inputs == ["-"] or (not inputs and not sys.stdin.isatty()):
         source = "stdin"
-        stops = parse_lines(sys.stdin.read().splitlines())
+        stops = parse_lines(sys.stdin.read().splitlines(), depot_given=bool(args.depot or args.start_at_truck))
     elif not inputs:
         stops = collect_interactive(console, offline=args.offline)
         if len(stops) >= 2 and not args.save_stops:
@@ -218,7 +218,7 @@ def gather_stops(args: argparse.Namespace, console: Console):
     else:
         if "-" in inputs:
             raise StopTextError("'-' (read from stdin) can't be mixed with typed addresses")
-        stops = parse_lines(inputs, unit="stop")
+        stops = parse_lines(inputs, unit="stop", depot_given=bool(args.depot or args.start_at_truck))
     if len(stops) + (1 if args.depot else 0) < 2:
         if source == "stdin":
             raise StopTextError("no stops given. Pass a CSV or addresses, pipe them in one per line, "
@@ -278,6 +278,11 @@ def plan(args: argparse.Namespace, console: Console) -> int:
 
     if args.depot:
         stops.insert(0, Stop(name="Depot", address=args.depot))
+    if stops and stops[0].shipment is not None:
+        console.print("[red]Error:[/red] the first stop is the depot, but it's a shipment's "
+                      f"{stops[0].action}. Give a depot with --depot \"ADDRESS\" (or --start-at-truck NAME), "
+                      "or add a depot row first.")
+        return 2
 
     try:
         if all(s.located for s in stops):
@@ -556,17 +561,21 @@ def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop
         for k, ((truck, trips), route) in enumerate(zip(by_truck.items(), truck_routes)):
             stops_out, number = [], 0
             for t in trips:
+                aboard = sum(located[n].demand for n in t.stops if located[n].action is None)
                 for n, arr in zip(t.stops, t.arrivals):
                     number += 1
                     s = located[n]
                     window = _window(s)
+                    aboard += s.demand if s.action == "pickup" else -s.demand
+                    what = {"pickup": "Pick up", "delivery": "Deliver"}.get(s.action, "Deliver")
                     stops_out.append(MapStop(s.lat, s.lon, str(number), s.name, [x for x in (
                         s.address,
                         f"Truck {truck}" + (f" · trip {t.trip}" if fleet.trips > 1 else "")
                         + (f" · driver {t.driver}" if t.driver else ""),
                         f"Arrives {format_clock(arr)}",
-                        f"Window: {window}" if window else "") if x] + risk_notes(args, s),
-                        flagged=is_flagged(args, s)))
+                        f"Window: {window}" if window else "",
+                        f"{what} {s.demand:g} · {aboard:g} aboard after this stop") if x] + risk_notes(args, s),
+                        flagged=is_flagged(args, s), kind=s.action or ""))
             tracks.append(MapTrack(names[k], TRUCK_COLORS[(truck - 1) % len(TRUCK_COLORS)],
                                    road_path([(s.lat, s.lon) for s in route],
                                              legs_info.shapes[k] if legs_info else None), stops_out))
@@ -588,6 +597,8 @@ def save_html(console: Console, args, panel, depot: Stop, tracks, distances: str
     write_html(args.html, title, summary, (depot.lat, depot.lon), depot.name, tracks,
                overlays=fema_overlays(args),
                footnote=f"Distances: {distances}. Click a stop for details; toggle layers at top right."
+                        + (" Dashed rings are pickups." if any(st.kind == "pickup" for t in tracks for st in t.stops)
+                           else "")
                         + (" Red-ringed stops are in FEMA-declared areas or under NWS alerts."
                            if getattr(args, "risk", None) else ""))
     console.print(f"[green]Saved interactive map to {args.html}[/green]  [dim](open it in a browser)[/dim]")
@@ -599,7 +610,7 @@ def save_fleet(path: Path, sol: FleetSolution, located: List[Stop], d) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["truck", "trip", "driver", "order", "name", "address", "lat", "lon", "departs", "arrives",
-                    "deadline", "leg_miles", "trip_miles"])
+                    "deadline", "leg_miles", "trip_miles", "shipment", "action"])
         for tr in sorted(sol.used, key=lambda t: (t.truck, t.trip)):
             prev, total = 0, 0.0
             for k, (n, arr) in enumerate(zip(tr.stops, tr.arrivals), start=1):
@@ -607,12 +618,12 @@ def save_fleet(path: Path, sol: FleetSolution, located: List[Stop], d) -> None:
                 total += d[prev][n]
                 w.writerow([tr.truck, tr.trip, tr.driver or "", k, s.name, s.address, f"{s.lat:.6f}",
                             f"{s.lon:.6f}", format_clock(tr.depart), format_clock(arr), format_clock(s.latest),
-                            f"{d[prev][n]:.2f}", f"{total:.2f}"])
+                            f"{d[prev][n]:.2f}", f"{total:.2f}", s.shipment or "", s.action or ""])
                 prev = n
         for n in sol.unassigned:
             s = located[n]
             w.writerow(["", "", "", "", s.name, s.address, f"{s.lat:.6f}", f"{s.lon:.6f}", "", "NOT DELIVERED",
-                        format_clock(s.latest), "", ""])
+                        format_clock(s.latest), "", "", s.shipment or "", s.action or ""])
 
 
 # -- disaster relief helpers ----------------------------------------------------
@@ -927,14 +938,15 @@ def dat_command(args, console: Console) -> int:
         console.print(t if loads else "No matching loads.")
     if args.stops and loads:
         import csv as _csv
-        rows = to_stops(loads)
+        from routekit.dat import SHIPMENT_FIELDS, to_shipments
+        rows = to_shipments(loads)
         with open(args.stops, "w", newline="", encoding="utf-8") as fh:
-            w = _csv.DictWriter(fh, fieldnames=["name", "address", "lat", "lon"])
+            w = _csv.DictWriter(fh, fieldnames=SHIPMENT_FIELDS)
             w.writeheader()
             w.writerows(rows)
         if not args.json:
-            console.print(f"[green]Saved {len(rows)} pickups to {args.stops}[/green]  "
-                          f"[dim](add a depot row or --start-at-truck, then: routekit plan {args.stops})[/dim]")
+            console.print(f"[green]Saved {len(rows)} loads as pickup → delivery shipments to {args.stops}[/green]  "
+                          f"[dim](then: routekit plan {args.stops} --start-at-truck NAME, or --depot ADDRESS)[/dim]")
     return 0
 
 

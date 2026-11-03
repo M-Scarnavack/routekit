@@ -148,9 +148,12 @@ def dat_rate(origin: str, destination: str, equipment: str = "van", contract: bo
 
 def dat_search_loads(origin: str, radius: int = 100, equipment: str = "van", destination: Optional[str] = None,
                      pickup_date: Optional[str] = None, limit: int = 25) -> Dict[str, Any]:
-    from routekit.dat import DatClient, DatError, to_stops
+    from routekit.dat import DatClient, DatError, to_shipments
     try:
         loads = DatClient.from_env().search_loads(origin, radius, equipment, destination, pickup_date, limit)
     except DatError as e:
         return {"ok": False, "error": str(e)}
-    return {"ok": True, "loads": [ld.to_dict() for ld in loads], "pickup_stops": to_stops(loads)}
+    shipments = [f"{r['name']}: " + (f"{r['pickup_lat']}, {r['pickup_lon']}" if r["pickup_lat"] != "" else r["pickup"])
+                 + " > " + (f"{r['delivery_lat']}, {r['delivery_lon']}" if r["delivery_lat"] != "" else r["delivery"])
+                 for r in to_shipments(loads)]
+    return {"ok": True, "loads": [ld.to_dict() for ld in loads], "shipment_stops": shipments}

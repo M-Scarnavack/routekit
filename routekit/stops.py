@@ -26,6 +26,20 @@ SERVICE_COLS = ("service", "service_min", "service_minutes", "dwell")
 TRUCK_COLS = ("truck", "vehicle", "truck_id")
 GROUP_COLS = ("group", "together", "group_id")
 
+# Pickup-and-delivery: one row per stop (shipment + type), or one row per shipment (pickup + delivery)
+SHIPMENT_COLS = ("shipment", "shipment_id", "load_id", "order_id")  # not "load" (= demand) or "order" (stop #)
+TYPE_COLS = ("type", "action", "stop_type", "kind")
+PICKUP_COLS = ("pickup", "pickup_address", "origin", "from")
+DELIVERY_COLS = ("delivery", "delivery_address", "dropoff", "destination", "to")
+PICKUP_LAT, PICKUP_LON = ("pickup_lat", "origin_lat"), ("pickup_lon", "pickup_lng", "origin_lon", "origin_lng")
+DELIVERY_LAT, DELIVERY_LON = ("delivery_lat", "destination_lat"), ("delivery_lon", "delivery_lng",
+                                                                     "destination_lon", "destination_lng")
+PICKUP_EARLIEST, PICKUP_LATEST = ("pickup_after", "pickup_earliest", "pickup_ready"), ("pickup_by", "pickup_latest")
+DELIVERY_EARLIEST = ("deliver_after", "delivery_after", "delivery_earliest")
+DELIVERY_LATEST = ("deliver_by", "delivery_by", "delivery_latest", "deadline", "latest", "due")
+PICKUP_WORDS = {"pickup", "pick up", "pick-up", "p", "pu", "load", "origin"}
+DELIVERY_WORDS = {"delivery", "deliver", "drop", "dropoff", "drop-off", "d", "del", "unload", "destination"}
+
 _OPEN_TIMES = {"", "eod", "none", "any", "anytime", "-", "n/a", "na"}
 _CLOCK = re.compile(r"^(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?$", re.IGNORECASE)
 
@@ -43,6 +57,8 @@ class Stop:
     service: Optional[float] = None  # minutes at the stop (None = fleet default)
     truck: Optional[int] = None     # must ride on this truck (1-based)
     group: Optional[str] = None     # stops sharing a group ride the same trip
+    shipment: Optional[str] = None  # pickup-and-delivery: both halves share this id
+    action: Optional[str] = None    # "pickup" or "delivery" (None = an ordinary drop from the depot)
 
     @property
     def located(self) -> bool:
@@ -50,7 +66,8 @@ class Stop:
 
     @property
     def constrained(self) -> bool:
-        return any(v is not None for v in (self.earliest, self.latest, self.ready, self.truck, self.group))
+        return any(v is not None for v in (self.earliest, self.latest, self.ready, self.truck, self.group,
+                                           self.shipment))
 
 
 class StopFileError(ValueError):
@@ -119,16 +136,23 @@ def load_stops(path: Path) -> List[Stop]:
         headers = {h.strip().lower() for h in reader.fieldnames if h}
         has_address = headers & set(ADDRESS_COLS + STREET_COLS)
         has_coords = (headers & set(LAT_COLS)) and (headers & set(LON_COLS))
-        if not has_address and not has_coords:
+        per_shipment = bool(headers & set(PICKUP_COLS + PICKUP_LAT)) and bool(headers & set(DELIVERY_COLS + DELIVERY_LAT))
+        if not has_address and not has_coords and not per_shipment:
             raise StopFileError(
-                f"{path} needs an 'address' column (or street/city/state/zip, or lat/lon). "
-                f"Found columns: {', '.join(sorted(headers))}"
+                f"{path} needs an 'address' column (or street/city/state/zip, or lat/lon, or pickup and "
+                f"delivery columns for shipments). Found columns: {', '.join(sorted(headers))}"
             )
 
         stops: List[Stop] = []
         for i, raw in enumerate(reader, start=1):
             row = {(k or "").strip().lower(): (v or "") for k, v in raw.items()}
             line = i + 1  # header is line 1
+            if per_shipment and (_pick(row, PICKUP_COLS + PICKUP_LAT) or _pick(row, DELIVERY_COLS + DELIVERY_LAT)):
+                try:
+                    stops.extend(_shipment_row(row, i))
+                except ValueError as e:
+                    raise StopFileError(f"{path}, line {line}: {e}") from None
+                continue
             city, state_zip = _pick(row, CITY_COLS), " ".join(
                 p for p in (_pick(row, STATE_COLS), _pick(row, ZIP_COLS)) if p)
             address = _pick(row, ADDRESS_COLS)
@@ -146,6 +170,10 @@ def load_stops(path: Path) -> List[Stop]:
                 raise StopFileError(f"{path}, line {line}: {e}") from None
             stops.append(stop)
 
+    try:
+        check_shipments(stops)
+    except ValueError as e:
+        raise StopFileError(f"{path}: {e}") from None
     if len(stops) < 2:
         raise StopFileError(f"{path} needs at least 2 stops (found {len(stops)}).")
     return stops
@@ -176,6 +204,67 @@ def _read_fleet_columns(row: Dict[str, str], stop: Stop) -> None:
             raise ValueError(f"truck must be a whole number starting at 1, got {truck!r}")
         stop.truck = int(t)
     stop.group = _pick(row, GROUP_COLS) or None
+    shipment = _pick(row, SHIPMENT_COLS)
+    kind = _pick(row, TYPE_COLS).lower()
+    if shipment:  # a 'type' column alone (e.g. "residential") means nothing to routekit
+        if not kind:
+            raise ValueError(f"shipment {shipment!r}: add a 'type' column saying pickup or delivery")
+        if kind in PICKUP_WORDS:
+            stop.action = "pickup"
+        elif kind in DELIVERY_WORDS:
+            stop.action = "delivery"
+        else:
+            raise ValueError(f"type must be pickup or delivery, got {kind!r}")
+        stop.shipment = shipment
+
+
+def _shipment_row(row: Dict[str, str], i: int) -> List[Stop]:
+    """One CSV row describing a whole shipment -> its pickup and delivery stops."""
+    name = _pick(row, NAME_COLS) or f"Shipment {i}"
+    sid = _pick(row, SHIPMENT_COLS) or name
+    p_addr, d_addr = _pick(row, PICKUP_COLS), _pick(row, DELIVERY_COLS)
+    p_lat, p_lon = _to_float(_pick(row, PICKUP_LAT)), _to_float(_pick(row, PICKUP_LON))
+    d_lat, d_lon = _to_float(_pick(row, DELIVERY_LAT)), _to_float(_pick(row, DELIVERY_LON))
+    if not (p_addr or p_lat is not None) or not (d_addr or d_lat is not None):
+        raise ValueError("a shipment needs both a pickup and a delivery (address or lat/lon)")
+    demand = _pick(row, DEMAND_COLS)
+    d = _to_float(demand) if demand else 1.0
+    if d is None or d < 0:
+        raise ValueError(f"demand must be a non-negative number, got {demand!r}")
+    service = _to_float(_pick(row, SERVICE_COLS)) if _pick(row, SERVICE_COLS) else None
+    pickup = Stop(f"{name} (pickup)", p_addr, p_lat, p_lon, demand=d, shipment=sid, action="pickup",
+                  earliest=parse_clock(_pick(row, PICKUP_EARLIEST)), latest=parse_clock(_pick(row, PICKUP_LATEST)),
+                  ready=parse_clock(_pick(row, READY_COLS)), service=service)
+    delivery = Stop(f"{name} (delivery)", d_addr, d_lat, d_lon, demand=d, shipment=sid, action="delivery",
+                    earliest=parse_clock(_pick(row, DELIVERY_EARLIEST)),
+                    latest=parse_clock(_pick(row, DELIVERY_LATEST)), service=service)
+    truck = _pick(row, TRUCK_COLS)
+    if truck:
+        t = _to_float(truck)
+        if t is None or t < 1 or t != int(t):
+            raise ValueError(f"truck must be a whole number starting at 1, got {truck!r}")
+        pickup.truck = delivery.truck = int(t)
+    for s in (pickup, delivery):
+        if s.earliest is not None and s.latest is not None and s.earliest > s.latest:
+            raise ValueError(f"{s.name}: earliest time is after the deadline")
+    return [pickup, delivery]
+
+
+def check_shipments(stops: List[Stop]) -> None:
+    """Every shipment needs exactly one pickup and one delivery with the same demand."""
+    by_id: Dict[str, List[Stop]] = {}
+    for s in stops:
+        if s.shipment is not None:
+            by_id.setdefault(s.shipment, []).append(s)
+    for sid, members in by_id.items():
+        kinds = sorted(m.action for m in members)
+        if kinds != ["delivery", "pickup"]:
+            raise ValueError(f"shipment {sid!r} needs exactly one pickup and one delivery (found {', '.join(kinds)})")
+        p, d = (members[0], members[1]) if members[0].action == "pickup" else (members[1], members[0])
+        if p.demand != d.demand:
+            raise ValueError(f"shipment {sid!r}: pickup and delivery demand differ ({p.demand:g} vs {d.demand:g})")
+        if p.group or d.group:
+            raise ValueError(f"shipment {sid!r}: shipments can't also be in a 'group'")
 
 
 def save_route(path: Path, ordered: List[Stop], legs: List[float]) -> None:

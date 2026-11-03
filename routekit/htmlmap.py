@@ -48,6 +48,7 @@ class MapStop:
     title: str               # popup heading
     details: List[str] = field(default_factory=list)  # popup lines (plain text)
     flagged: bool = False    # highlight (e.g. inside a disaster area)
+    kind: str = ""           # "pickup" draws a dashed ring
 
 
 @dataclass
@@ -102,7 +103,7 @@ def write_html(path: Path, title: str, summary_text: str, depot: Optional[LatLon
             "name": t.name, "color": t.color,
             "path": [[round(a, 6), round(b, 6)] for a, b in t.path],
             "stops": [{"lat": s.lat, "lon": s.lon, "label": s.label, "title": s.title,
-                       "details": s.details, "flagged": s.flagged} for s in t.stops],
+                       "details": s.details, "flagged": s.flagged, "kind": s.kind} for s in t.stops],
         } for t in tracks],
         "overlays": [{"name": o.name, "color": o.color, "geojson": o.geojson, "fit": o.fit}
                      for o in overlays or []],
@@ -146,6 +147,7 @@ TEMPLATE = r"""<!doctype html>
   .stop-pin { width: 22px; height: 22px; border-radius: 50%; color: #fff; font: 700 11px/22px sans-serif;
               text-align: center; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
   .stop-pin.flagged { outline: 3px solid #d62828; outline-offset: 1px; }
+  .stop-pin.pickup { border: 2px dashed #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.55); }
   .depot-pin { width: 18px; height: 18px; background: #7b3fa0; border: 2px solid #fff; border-radius: 3px;
                box-shadow: 0 1px 4px rgba(0,0,0,.4); }
   .leaflet-popup-content { margin: 10px 12px; }
@@ -213,7 +215,7 @@ for (const t of DATA.tracks) {
   }
   for (const s of t.stops) {
     const icon = L.divIcon({ className: "", iconSize: [26, 26], iconAnchor: [13, 13],
-      html: `<div class="stop-pin${s.flagged ? " flagged" : ""}" style="background:${t.color}">${esc(s.label)}</div>` });
+      html: `<div class="stop-pin${s.flagged ? " flagged" : ""}${s.kind === "pickup" ? " pickup" : ""}" style="background:${t.color}">${esc(s.label)}</div>` });
     const body = s.details.map(d => `<div class="d${d.startsWith("⚠") ? " flag" : ""}">${esc(d)}</div>`).join("");
     L.marker([s.lat, s.lon], { icon, title: s.title }).bindPopup(`<b>${esc(s.title)}</b>${body}`).addTo(group);
     bounds.extend([s.lat, s.lon]);

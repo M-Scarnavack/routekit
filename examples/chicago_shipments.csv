@@ -1,0 +1,9 @@
+name,lat,lon,pickup_lat,pickup_lon,delivery_lat,delivery_lon,demand,pickup_after,deliver_by,deadline
+Warehouse (West Loop),41.884454,-87.654519,,,,,,,,
+Willis Tower,41.878920,-87.636602,,,,,1,,,10:00 AM
+Navy Pier,41.892186,-87.609930,,,,,2,,,11:00 AM
+United Center,41.881295,-87.674218,,,,,1,,,
+Wrigley → Field Museum,,,41.947273,-87.656132,41.868263,-87.617869,3,9:00 AM,1:00 PM,
+Garfield Park → Museum of Science,,,41.887644,-87.716236,41.791688,-87.580284,2,,12:30 PM,
+Union Station → Lincoln Park Zoo,,,41.878974,-87.639508,41.918549,-87.636080,2,10:00 AM,,
+Mexican Art Museum → Art Institute,,,41.855942,-87.672344,41.880652,-87.624171,1,,11:30 AM,

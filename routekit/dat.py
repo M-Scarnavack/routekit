@@ -129,6 +129,8 @@ class Load:
     company: Optional[str]
     phone: Optional[str]
     raw: Any = field(repr=False, default=None)
+    dest_lat: Optional[float] = None
+    dest_lon: Optional[float] = None
 
     @property
     def rate_per_mile(self) -> Optional[float]:
@@ -296,7 +298,31 @@ def _load(m: dict) -> Load:
         deadhead_miles=_num(_find(m, "originDeadheadMiles", "deadheadMiles")),
         company=_find(poster, "companyName", "name"),
         phone=_find(contact, "phoneNumber", "phone") or _find(poster, "phone"),
-        raw=m)
+        raw=m, dest_lat=_num(_find(d, "latitude")), dest_lon=_num(_find(d, "longitude")))
+
+
+SHIPMENT_FIELDS = ["name", "shipment", "pickup", "pickup_lat", "pickup_lon", "delivery", "delivery_lat",
+                   "delivery_lon", "demand"]
+
+
+def to_shipments(loads: Iterable[Load]) -> List[dict]:
+    """Loads as pickup → delivery shipments for 'routekit plan' (one CSV row per load).
+
+    Uses DAT's coordinates when present; otherwise the 'City, ST' text, which the Census
+    geocoder can't place without a street address (fill those in, or add coordinates).
+    """
+    rows = []
+    for i, ld in enumerate(loads, start=1):
+        sid = ld.id or f"load{i}"
+        rows.append({"name": f"{ld.origin} → {ld.destination} ({ld.company or 'DAT'})", "shipment": sid,
+                     "pickup": "" if ld.origin_lat is not None else ld.origin,
+                     "pickup_lat": ld.origin_lat if ld.origin_lat is not None else "",
+                     "pickup_lon": ld.origin_lon if ld.origin_lon is not None else "",
+                     "delivery": "" if ld.dest_lat is not None else ld.destination,
+                     "delivery_lat": ld.dest_lat if ld.dest_lat is not None else "",
+                     "delivery_lon": ld.dest_lon if ld.dest_lon is not None else "",
+                     "demand": 1})
+    return rows
 
 
 def to_stops(loads: Iterable[Load]) -> List[dict]:

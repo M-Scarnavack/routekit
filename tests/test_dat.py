@@ -96,6 +96,9 @@ def test_load_search_and_stops():
     q = [c for c in fake.calls if c[1].endswith("/queries")][0][2]["criteria"]
     assert q["lane"]["equipment"]["types"] == ["V"] and q["lane"]["origin"]["area"]["radius"]["miles"] == 150
     assert to_stops(loads)[0]["lat"] == 41.525
+    from routekit.dat import to_shipments
+    row = to_shipments(loads)[0]
+    assert row["pickup_lat"] == 41.525 and row["delivery"] == "Dallas, TX" and row["shipment"] == "M1"
 
 
 def test_bad_credentials():
@@ -121,6 +124,6 @@ def test_cli_dat_loads_json_and_stops(monkeypatch, tmp_path, capsys):
     assert cli.main(["dat", "loads", "--origin", "Chicago, IL", "--json", "--stops", str(stops)]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["loads"][0]["company"] == "Acme Logistics"
-    assert "Pickup M1 → Dallas, TX" in stops.read_text()
+    assert "\"Joliet, IL → Dallas, TX (Acme Logistics)\",M1," in stops.read_text()
     assert cli.main(["dat", "rate", "Chicago, IL", "Atlanta, GA"]) == 0
     assert "$2.31" in capsys.readouterr().out

@@ -10,8 +10,10 @@ Each stop is one line of text:
 - ``Label: address`` names the stop (otherwise the street part is used).
 - ``@ TIME`` sets a deadline; ``@ TIME-TIME`` sets a delivery window.
 - ``lat, lon`` skips geocoding.
+- ``Name: pickup address > delivery address @ 3:00 PM`` is a *shipment*: pick up, then deliver
+  (the ``@`` time on each side is that side's window; the label names both halves).
 
-The first stop is the depot unless ``--depot`` is given.
+The first stop is the depot unless ``--depot`` (or ``--start-at-truck``) is given.
 """
 
 from __future__ import annotations
@@ -87,11 +89,49 @@ def parse_stop_text(text: str, index: int = 0) -> Optional[Stop]:
     return Stop(name=name, address=address, lat=lat, lon=lon, earliest=earliest, latest=latest)
 
 
-def parse_lines(lines: Iterable[str], unit: str = "line") -> List[Stop]:
+_SHIPMENT_SPLIT = re.compile(r"\s+>\s+")
+
+
+def parse_shipment_text(text: str, number: int) -> Optional[List[Stop]]:
+    """'Name: pickup > delivery @ 3:00 PM' -> [pickup, delivery], or None if it isn't a shipment."""
+    line = text.strip()
+    parts = _SHIPMENT_SPLIT.split(line)
+    if len(parts) == 1:
+        return None
+    if len(parts) != 2:
+        raise StopTextError("a shipment has one '>' between its pickup and its delivery")
+    left, right = parts
+    label = None
+    lm = _LABEL.match(left)
+    if lm and not _COORDS.match(left):
+        label, left = lm.group(1).strip(), lm.group(2).strip()
+    pickup = parse_stop_text(left, 1)
+    delivery = parse_stop_text(right, 1)
+    if pickup is None or delivery is None:
+        raise StopTextError("a shipment needs both a pickup and a delivery")
+    name = label or f"Shipment {number}"
+    sid = f"{name}#{number}"
+    pickup.name, delivery.name = f"{name} (pickup)", f"{name} (delivery)"
+    pickup.shipment = delivery.shipment = sid
+    pickup.action, delivery.action = "pickup", "delivery"
+    return [pickup, delivery]
+
+
+def parse_lines(lines: Iterable[str], unit: str = "line", depot_given: bool = False) -> List[Stop]:
+    """Parse typed stops. Unless `depot_given`, the first stop is the depot."""
     stops: List[Stop] = []
+    shipments = 0
     for n, raw in enumerate(lines, start=1):
         try:
-            s = parse_stop_text(raw, len(stops))
+            pair = parse_shipment_text(raw, shipments + 1) if raw.strip() and not raw.strip().startswith("#") else None
+            if pair:
+                if not stops and not depot_given:
+                    raise StopTextError("the first stop is the depot, so it can't be a shipment. Put the depot "
+                                        "first, or use --depot or --start-at-truck")
+                shipments += 1
+                stops.extend(pair)
+                continue
+            s = parse_stop_text(raw, len(stops) + (1 if depot_given else 0))
         except StopTextError as e:
             raise StopTextError(f"{unit} {n}: {e}") from None
         if s:
@@ -104,6 +144,7 @@ HELP = (
     "The first address is the [magenta]depot[/magenta], where trucks start and end.\n\n"
     "[dim]Optional:[/dim]  [cyan]Name: address[/cyan]   ·   [cyan]address @ 10:30 AM[/cyan] (deadline)   ·   "
     "[cyan]address @ 9:00-11:00[/cyan] (window)   ·   [cyan]41.88, -87.63[/cyan]\n"
+    "[dim]Shipment:[/dim]  [cyan]Name: pickup address > delivery address @ 3:00 PM[/cyan]\n"
     "[dim]Commands:[/dim]  [cyan]undo[/cyan] removes the last stop  ·  [cyan]list[/cyan] shows them  ·  "
     "Ctrl+C quits"
 )
@@ -141,9 +182,35 @@ def collect_interactive(console: Console, offline: bool = False) -> List[Stop]:
                 console.print(f"  {i:>2}  {s.name}  [dim]{s.address or ''}[/dim]")
             continue
         try:
-            stop = parse_stop_text(text, len(stops))
+            pair = parse_shipment_text(text, sum(1 for x in stops if x.action == "pickup") + 1)
+            if pair and not stops:
+                raise StopTextError("the first stop is the depot, so it can't be a shipment")
+            stop = None if pair else parse_stop_text(text, len(stops))
         except StopTextError as e:
             console.print(f"[red]✗[/red] {e}")
+            continue
+        if pair:
+            ok = True
+            for part in pair:
+                if not part.located:
+                    try:
+                        hit = geocode_one(part.address, offline=offline)
+                    except GeocodeError as e:
+                        console.print(f"[red]✗ Couldn't reach the geocoder ({e}).[/red]")
+                        ok = False
+                        break
+                    if hit is None:
+                        console.print(f"[red]✗ Couldn't find the {part.action} address[/red] {part.address!r}. "
+                                      "Include the house number, street, city, and state.")
+                        ok = False
+                        break
+                    part.lat, part.lon, matched = hit
+                    console.print(f"  [green]✓[/green] {part.action}: [dim]{matched}[/dim]{window_note(part)}")
+                else:
+                    console.print(f"  [green]✓[/green] {part.action}: [dim]{part.lat:.5f}, {part.lon:.5f}[/dim]"
+                                  f"{window_note(part)}")
+            if ok:
+                stops.extend(pair)
             continue
         if stop is None:
             continue

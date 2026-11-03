@@ -26,7 +26,7 @@ routekit plan "1100 W Randolph St, Chicago, IL 60607" \
               "41.8663, -87.6170"
 ```
 
-Per stop: `Name: address` labels it, `@ TIME` is a deadline, `@ TIME-TIME` is a window, and `lat, lon` skips geocoding. For a long list, write one stop per line to a text file and run `routekit plan - < stops.txt`. Add `--save-stops stops.csv` to keep them. Don't run bare `routekit plan` from a tool call: it's the interactive prompt for humans.
+Per stop: `Name: address` labels it, `@ TIME` is a deadline, `@ TIME-TIME` is a window, and `lat, lon` skips geocoding. A **shipment** (pick up at A, deliver to B on the same truck) is `"Name: A > B @ 3:00 PM"`. Use this whenever the user describes freight moving between two places rather than out of the depot. For a long list, write one stop per line to a text file and run `routekit plan - < stops.txt`. Add `--save-stops stops.csv` to keep them. Don't run bare `routekit plan` from a tool call: it's the interactive prompt for humans.
 
 ## 3. Have a CSV? Look at it before running anything
 
@@ -45,6 +45,8 @@ Read the header and a few rows. routekit matches column names case-insensitively
 | Minutes on site | `service`, `service_min`, `dwell` |
 | Must use truck N | `truck`, `vehicle`, `truck_id` (1-based) |
 | Must ship together | `group`, `together`, `group_id` (same value = same trip) |
+| Pickup & delivery (per stop) | `shipment` + `type` (`pickup`/`delivery`) |
+| Pickup & delivery (per shipment row) | `pickup`/`delivery` (addresses) or `pickup_lat`/`pickup_lon`/`delivery_lat`/`delivery_lon`, plus `pickup_after`, `deliver_by`, `demand` |
 
 Times can be `9:05`, `09:05`, `9:05 AM`, `9am`; blank or `EOD` means no limit.
 

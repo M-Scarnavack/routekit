@@ -19,6 +19,8 @@ Rules a plan must satisfy:
 - a truck's next trip leaves only after its previous trip is back (+ ``reload`` minutes)
 - no more than ``drivers`` trucks are out at once (drivers can switch trucks at the depot)
 - stops pinned with ``truck=N`` ride only truck N; stops sharing a ``group`` ride the same trip
+- pickup-and-delivery: a shipment's pickup and delivery ride the same trip, pickup first, and the
+  truck's load (depot freight + picked-up freight not yet delivered) never exceeds ``capacity``
 - optionally, every truck is back by the end of the shift
 
 **Slots.** Each truck has ``trips`` slots, so there are ``trucks × trips``
@@ -139,6 +141,24 @@ class FleetProblem:
             if s.group:
                 groups.setdefault(s.group, []).append(i)
         self.group_of: Dict[int, List[int]] = {i: members for members in groups.values() for i in members}
+        # Pickup-and-delivery pairs. A pickup's "ready" time is when the freight is ready *at the pickup*,
+        # so it acts like an earliest arrival there, not a delay leaving the depot.
+        self.action = [None] + [s.action for s in stops[1:]]
+        self.delivery_of: Dict[int, int] = {}
+        self.pickup_of: Dict[int, int] = {}
+        by_id: Dict[str, Dict[str, int]] = {}
+        for i, s in enumerate(stops[1:], start=1):
+            if s.shipment is not None:
+                by_id.setdefault(s.shipment, {})[s.action] = i
+        for pair in by_id.values():
+            if set(pair) != {"pickup", "delivery"}:
+                raise ValueError("every shipment needs exactly one pickup and one delivery")
+            pu, de = pair["pickup"], pair["delivery"]
+            self.delivery_of[pu], self.pickup_of[de] = de, pu
+            self.group_of[pu] = self.group_of[de] = [pu, de]  # move as a unit, pickup first
+            if self.ready[pu] is not None:
+                self.early[pu] = max(self.early[pu] or 0, self.ready[pu])
+                self.ready[pu] = None
         self.minutes_per_mile = 60.0 / fleet.mph
 
     def truck_of(self, slot: int) -> int:
@@ -156,16 +176,42 @@ class FleetProblem:
             total += d[a][b]
         return total
 
+    def peak_load(self, route: Sequence[int]) -> Optional[float]:
+        """Most freight on the truck at any point, or None if a delivery comes before its pickup
+        (or a pickup's delivery is missing from the trip).
+
+        The truck leaves with every ordinary stop's freight; pickups add, deliveries remove.
+        """
+        load = sum(self.demand[n] for n in route if self.action[n] is None)
+        peak = load
+        open_pickups = set()
+        for n in route:
+            act = self.action[n]
+            if act == "pickup":
+                load += self.demand[n]
+                open_pickups.add(n)
+            elif act == "delivery":
+                pu = self.pickup_of[n]
+                if pu not in open_pickups:
+                    return None
+                open_pickups.discard(pu)
+                load -= self.demand[n]
+            else:
+                load -= self.demand[n]
+            peak = max(peak, load)
+        return None if open_pickups else peak
+
     def _static_ok(self, route: Sequence[int], truck: int) -> bool:
-        """Rules that don't depend on when the trip leaves: truck pins and capacity."""
-        load = 0.0
+        """Rules that don't depend on when the trip leaves: truck pins, pickup-before-delivery, capacity."""
         for n in route:
             pin = self.pin[n]
             if pin is not None and pin != truck + 1:
                 return False
-            load += self.demand[n]
+        peak = self.peak_load(route)
+        if peak is None:
+            return False
         cap = self.fleet.capacity
-        return cap is None or load <= cap + EPS
+        return cap is None or peak <= cap + EPS
 
     def ready_time(self, route: Sequence[int]) -> float:
         t = self.fleet.start
@@ -195,7 +241,7 @@ class FleetProblem:
             t += tm[prev][0] if tm is not None else d[prev][0] * mpm
         if self.fleet.end is not None and route and t > self.fleet.end + EPS:
             return None
-        load = sum(self.demand[n] for n in route)
+        load = self.peak_load(route) or 0.0
         return TripPlan(truck + 1, list(route), self.miles(route), load, depart, arrivals, t, trip, driver)
 
     def plan(self, route: Sequence[int], truck: int) -> Optional[TripPlan]:
@@ -292,7 +338,30 @@ class FleetProblem:
             routes[slot] = original
         return best
 
+    def _best_pair_insert(self, routes: List[List[int]], slot: int, pu: int, de: int):
+        """Cheapest legal (pickup position, delivery position) in routes[slot], pickup first.
+
+        Returns (added_miles, new_route) or None. Tries every pair of positions: O(n²) candidates.
+        """
+        route = routes[slot]
+        base = self.miles(route)
+        best = None
+        for i in range(len(route) + 1):
+            for j in range(i, len(route) + 1):
+                cand = route[:i] + [pu] + route[i:j] + [de] + route[j:]
+                added = self.miles(cand) - base
+                if best is not None and added >= best[0] - EPS:
+                    continue
+                routes[slot] = cand
+                if self._ok(routes, (slot,)):
+                    best = (added, cand)
+                routes[slot] = route
+        return best
+
     def _insert_unit(self, routes: List[List[int]], unit: List[int], slot: int) -> Optional[List[int]]:
+        if len(unit) == 2 and self.delivery_of.get(unit[0]) == unit[1]:
+            hit = self._best_pair_insert(routes, slot, unit[0], unit[1])
+            return hit[1] if hit else None
         original = routes[slot]
         for node in unit:
             ins = self._best_insert(routes, slot, node)
@@ -321,7 +390,8 @@ class FleetProblem:
         for i in range(1, self.n):
             if i in seen:
                 continue
-            unit = sorted(self.group_of.get(i, [i]))
+            unit = list(self.group_of[i]) if i in self.delivery_of or i in self.pickup_of \
+                else sorted(self.group_of.get(i, [i]))
             seen.update(unit)
             units.append(unit)
 
@@ -455,8 +525,34 @@ class FleetProblem:
                             routes[a], routes[b] = ra, rb
         return False
 
+    def _relocate_pair(self, routes: List[List[int]]) -> bool:
+        """Move a whole shipment (pickup and delivery) to wherever it saves the most miles."""
+        for a in range(len(routes)):
+            for pu in [n for n in routes[a] if n in self.delivery_of]:
+                de = self.delivery_of[pu]
+                original = routes[a]
+                without = [n for n in original if n not in (pu, de)]
+                saved = self.miles(original) - self.miles(without)
+                routes[a] = without
+                if self.coupled and self.schedule(routes) is None:
+                    routes[a] = original
+                    continue
+                best = None
+                for b in self._candidate_slots(routes):
+                    hit = self._best_pair_insert(routes, b, pu, de)
+                    if hit and (best is None or hit[0] < best[0]):
+                        best = (hit[0], b, hit[1])
+                if best and best[0] < saved - 1e-6:
+                    routes[best[1]] = best[2]
+                    self._compact(routes)
+                    return True
+                routes[a] = original
+        return False
+
     def improve(self, routes: List[List[int]], max_rounds: int = 500) -> Dict[str, int]:
         moves = {"2-opt": 0, "relocate": 0, "swap": 0}
+        if self.delivery_of:
+            moves["move shipment"] = 0
         use_swap = self.n <= 200  # swap is O(n²) evaluations per round
         for _ in range(max_rounds):
             changed = False
@@ -466,6 +562,9 @@ class FleetProblem:
                     changed = True
             if self._relocate(routes):
                 moves["relocate"] += 1
+                continue
+            if self.delivery_of and self._relocate_pair(routes):
+                moves["move shipment"] += 1
                 continue
             if use_swap and self._swap(routes):
                 moves["swap"] += 1
@@ -477,6 +576,20 @@ class FleetProblem:
     def retry_unassigned(self, routes: List[List[int]], unassigned: List[int]) -> List[int]:
         still = []
         for node in unassigned:
+            if node in self.delivery_of:  # a shipment: retry it as a pair
+                de = self.delivery_of[node]
+                best = None
+                for s in self._candidate_slots(routes):
+                    hit = self._best_pair_insert(routes, s, node, de)
+                    if hit and (best is None or hit[0] < best[0]):
+                        best = (hit[0], s, hit[1])
+                if best:
+                    routes[best[1]] = best[2]
+                else:
+                    still += [node, de]
+                continue
+            if node in self.pickup_of:
+                continue  # handled with its pickup
             if node in self.group_of:
                 still.append(node)
                 continue

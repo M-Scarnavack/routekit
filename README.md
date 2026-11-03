@@ -101,6 +101,7 @@ The script independently re-checks every rule after solving, rather than trustin
 
 - **Route any U.S. addresses.** Give it a CSV with an `address` column (or `street`/`city`/`state`/`zip`, or `lat`/`lon`), and routekit geocodes it through the [U.S. Census Bureau batch geocoder](https://geocoding.geo.census.gov/), with no API key.
 - **Plan a fleet.** `--trucks`, `--capacity`, `--trips` (trucks can come back and go out again), `--drivers` (at most this many trucks out at once), and optional `deadline`, `earliest`, `ready`, `truck`, and `group` columns. On the Chicago fleet example, local search cuts the initial plan from 54.6 to 36.8 miles (−33%), with every time window met.
+- **Pickup and delivery.** Real freight moves A → B, not just out of a depot. A shipment's pickup and delivery ride the same trip with the pickup first, and the truck's load is tracked stop by stop: depot freight plus whatever has been picked up and not yet delivered must never exceed capacity. Type `"Acme: 233 S Wacker Dr, Chicago, IL > 1060 W Addison St, Chicago, IL @ 3:00 PM"`, or use a CSV with `pickup`/`delivery` columns. `routekit dat loads --stops` saves DAT loads as shipments ready to plan.
 - **Real road distances (`--roads`).** Road miles and drive times from OpenStreetMap via [OSRM](https://project-osrm.org/), free with no API key, and the map traces the actual streets. On the Chicago example, road miles run about 34% longer than straight-line.
 - **Truck routing and tolls.** `--truck` routes for a tractor-trailer, or give `--height`, `--weight`, `--length`, and `--hazmat`, so low bridges, weight limits, and hazmat restrictions are respected. Every leg shows its toll-road miles. `--avoid-tolls` stays off toll roads and reports exactly what that costs: on a Chicago–Gary–O'Hare–Joliet–Naperville loop, **+6.7 mi and +43 min**. This uses the free [Valhalla](https://valhalla.github.io/valhalla/) server run by FOSSGIS.
 - **2-opt optimization** for single routes: the 30-city demo drops from **11,737 to 10,139 miles (−13.6%)**.
@@ -161,6 +162,8 @@ Stop 1 › Willis Tower: 233 S Wacker Dr, Chicago, IL @ 10:30 AM
 Stop 2 ›
 ```
 
+A **shipment** (pick up here, deliver there) uses `>`: `"Acme: 41.95, -87.65 @ 9:00-10:00 > 1060 W Addison St, Chicago, IL @ 3:00 PM"`. Each side can have its own time window.
+
 Each typed stop can carry a label and a time: `Name: address`, `address @ 10:30 AM` for a deadline, or `address @ 9:00-11:00` for a window. You can also type `lat, lon` in place of an address. Pipe a list in with `cat stops.txt | routekit plan -`, and save typed stops for next time with `--save-stops stops.csv`.
 
 **With a CSV** (best for many stops, or for loads and package rules):
@@ -197,6 +200,17 @@ Art Institute,111 S Michigan Ave Chicago IL 60603,2,9:00 AM,11:00 AM
 | `service` | Minutes on site (overrides `--service`) |
 | `truck` | Must ride on truck N |
 | `group` | Stops with the same value ride the same trip |
+| `shipment` + `type` | Pickup and delivery, one row per stop: same `shipment` id, `type` = `pickup` or `delivery` |
+
+**Shipments CSV** (one row per shipment, for freight moving A → B):
+
+```csv
+name,lat,lon,pickup_lat,pickup_lon,delivery_lat,delivery_lon,demand,pickup_after,deliver_by
+Warehouse,41.884454,-87.654519,,,,,,,
+Wrigley → Field Museum,,,41.947273,-87.656132,41.868263,-87.617869,3,9:00 AM,1:00 PM
+```
+
+`pickup`/`delivery` address columns work too. Rows without pickup and delivery columns are ordinary stops, and the first one is the depot. Try `examples/chicago_shipments.csv`.
 
 | Option | Description |
 |---|---|
@@ -321,8 +335,9 @@ Then just ask: *"Plan routes for deliveries.csv with 3 trucks, 12 stops max each
 2. **Distance matrix:** haversine miles between every pair of stops, O(n²).
 3. **One truck:** nearest neighbor (the C950 strategy), then **2-opt** removes route crossings until no swap helps.
 4. **Fleet (VRPTW):** stops are inserted tightest deadline first, each into the trip and position that adds the fewest miles *without breaking a rule*. Then local search repeats 2-opt within trips, **relocate** (move a stop to another trip), and **swap** (exchange stops between trips) until nothing improves. Every move is checked against capacity, windows, ready times, pins, and groups.
-5. **Multiple trips and drivers:** each truck gets `--trips` slots. Once trips depend on each other (a truck's second trip waits for its first, and a trip waits for a free driver), every candidate move re-simulates the whole day. Whenever a truck is loaded and a driver is free, the most urgent trip leaves.
-6. **Draw:** each terminal cell is a 2×4 grid of braille dots. Route legs are rasterized with Bresenham's line algorithm. All trucks animate together, scaled to finish at the same moment.
+5. **Pickup and delivery:** each shipment is inserted as a pair. routekit tries every pickup position and every later delivery position, and keeps the cheapest legal pair. The load is checked stop by stop, and a "move shipment" step in local search relocates whole pairs between trips.
+6. **Multiple trips and drivers:** each truck gets `--trips` slots. Once trips depend on each other (a truck's second trip waits for its first, and a trip waits for a free driver), every candidate move re-simulates the whole day. Whenever a truck is loaded and a driver is free, the most urgent trip leaves.
+7. **Draw:** each terminal cell is a 2×4 grid of braille dots. Route legs are rasterized with Bresenham's line algorithm. All trucks animate together, scaled to finish at the same moment.
 
 Without `--roads`, distances are straight-line miles, and road miles run longer (about 34% on the Chicago example). With `--roads`, routekit asks an [OSRM](https://project-osrm.org/) server for the road miles and drive times between every pair of stops. It optimizes on the average of both directions, since one-way streets make A→B differ from B→A and 2-opt assumes symmetry, and it schedules with the real one-way drive times. Results are cached, and requests are spaced a second apart to respect the free demo server's policy. For heavy use, [run your own OSRM](https://github.com/Project-OSRM/osrm-backend) and pass `--osrm-url`.
 
@@ -367,6 +382,9 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - [x] PyPI release: `pip install routekit-cli`
 - [x] FEMA relief mode: `routekit disasters`, `--fema`, `--fema-within`, with NWS alerts on both maps
 - [x] Freight-demand map from FAF5 (`routekit freight`)
+- [x] Pickup-and-delivery shipments (A → B on the same trip, load tracked along the route)
+- [ ] Driver hours-of-service limits (11-hour driving, 14-hour window, 30-minute break)
+- [ ] Multiple depots (trucks starting from different yards in one plan)
 
 ### Development
 

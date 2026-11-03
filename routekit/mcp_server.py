@@ -40,7 +40,8 @@ INSTRUCTIONS = (
 _STOP_HELP = ("One stop per string; the FIRST is the depot (start/end) unless depot or start_at_truck is given. "
               "Each string is an address ('233 S Wacker Dr, Chicago, IL'), optionally labeled ('Willis Tower: "
               "233 S Wacker Dr, Chicago, IL'), with an optional deadline ('… @ 10:30 AM') or window "
-              "('… @ 9:00-11:00'), or coordinates ('41.88, -87.63').")
+              "('… @ 9:00-11:00'), or coordinates ('41.88, -87.63'). A SHIPMENT is 'Name: pickup > delivery @ 3:00 PM': "
+              "picked up then delivered on the same truck, with load tracked along the route.")
 
 TOOLS = [
     {
@@ -150,7 +151,8 @@ TOOLS = [
         "name": "dat_search_loads",
         "title": "Search DAT loads",
         "description": "Search the DAT load board near a truck. Returns loads (origin, destination, pickup, rate, "
-                       "miles, broker contact) and pickup_stops ready for plan_route. Needs DAT API credentials.",
+                       "miles, broker contact) and shipment_stops: 'pickup > delivery' strings to pass straight to "
+                       "plan_route's stops (after a depot, or with start_at_truck). Needs DAT API credentials.",
         "inputSchema": {"type": "object", "properties": {
             "origin": {"type": "string", "description": "'City, ST' or ZIP where the truck is."},
             "radius": {"type": "integer", "default": 100, "description": "Deadhead radius in miles."},
