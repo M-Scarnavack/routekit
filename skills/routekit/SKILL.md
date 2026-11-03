@@ -44,7 +44,7 @@ Read the header and a few rows. routekit matches column names case-insensitively
 | Available at depot | `ready`, `available`, `ready_at` |
 | Minutes on site | `service`, `service_min`, `dwell` |
 | Must use truck N | `truck`, `vehicle`, `truck_id` (1-based) |
-| Must ship together | `group`, `together`, `group_id` (same value = same truck) |
+| Must ship together | `group`, `together`, `group_id` (same value = same trip) |
 
 Times can be `9:05`, `09:05`, `9:05 AM`, `9am`; blank or `EOD` means no limit.
 
@@ -62,7 +62,7 @@ routekit plan stops.csv -o route.csv
 routekit plan stops.csv --one-way          # don't return to the depot
 ```
 
-**Fleet:** turned on by `--trucks`, `--capacity`, `--end`, `--service`, or any deadline/ready/truck/group column.
+**Fleet:** turned on by `--trucks`, `--capacity`, `--trips`, `--drivers`, `--end`, `--service`, or any deadline/ready/truck/group column. If the user has fewer drivers than trucks, or trucks that can make more than one run, say so with `--drivers` and `--trips`.
 ```bash
 routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service 10 -o plan.csv
 ```
@@ -74,6 +74,9 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 | `--start TIME` / `--end TIME` | Leave the depot at / be back by |
 | `--mph N` | Average speed (default 45; use ~20 for dense cities) |
 | `--service MIN` | Minutes per stop unless a `service` column overrides |
+| `--trips N` | Max trips per truck: a truck returns, reloads, and goes out again (needs `--capacity` to matter) |
+| `--drivers N` | At most N trucks out at once; drivers switch trucks at the depot |
+| `--reload MIN` | Minutes at the depot between a truck's trips |
 | `--depot ADDRESS` | Use this start/end instead of row 1 |
 | `--offline` | No network; use CSV coordinates or the geocode cache |
 | `-o FILE` | Save the ordered plan (truck, order, arrival time, miles) |

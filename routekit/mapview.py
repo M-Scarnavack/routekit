@@ -96,11 +96,16 @@ def truck_style(i: int) -> str:
 
 
 class _Track:
-    """One truck's route on the canvas."""
+    """One truck's route on the canvas.
+
+    `stop_cells[i]` is where point i of the route sits and `reached_at[i]` is the
+    path index where the truck gets there. `is_stop[i]` is False for the depot,
+    including mid-route returns between trips, which get no marker or number.
+    """
 
     def __init__(self, path: List[Dot], reached_at: List[int], stop_cells: List[Tuple[int, int]],
-                 route_style: str, stop_style: str, label_style: str, name: str):
-        self.path, self.reached_at, self.stop_cells = path, reached_at, stop_cells
+                 is_stop: List[bool], route_style: str, stop_style: str, label_style: str, name: str):
+        self.path, self.reached_at, self.stop_cells, self.is_stop = path, reached_at, stop_cells, is_stop
         self.route_style, self.stop_style, self.label_style, self.name = route_style, stop_style, label_style, name
 
 
@@ -128,22 +133,23 @@ class MapScene:
         n_labeled = 0
         for i, route in enumerate(routes):
             round_trip = len(route) > 2 and route[-1] is route[0]
-            n_stops = len(route) - (1 if round_trip else 0)
+            n_points = len(route) - (1 if round_trip else 0)
             pts = [self.project(s.lat, s.lon) for s in route]
             path: List[Dot] = [pts[0]]
-            reached_at = [0]  # index into path when stop k is reached
+            reached_at = [0]  # index into path when point k is reached
             for a, b in zip(pts, pts[1:]):
                 path.extend(bresenham(*a, *b)[1:])
                 reached_at.append(len(path) - 1)
+            cells = [self._cell(p) for p in pts[:n_points]]
+            is_stop = [k > 0 and route[k] is not route[0] for k in range(n_points)]
             if self.fleet:
                 style = truck_style(i)
-                track = _Track(path, reached_at, [self._cell(p) for p in pts[:n_stops]],
-                               style, style, style, (names[i] if names else f"Truck {i + 1}"))
+                track = _Track(path, reached_at, cells, is_stop, style, style, style,
+                               (names[i] if names else f"Truck {i + 1}"))
             else:
-                track = _Track(path, reached_at, [self._cell(p) for p in pts[:n_stops]],
-                               ROUTE_STYLE, STOP_STYLE, LABEL_STYLE, "route")
+                track = _Track(path, reached_at, cells, is_stop, ROUTE_STYLE, STOP_STYLE, LABEL_STYLE, "route")
             self.tracks.append(track)
-            n_labeled += n_stops - 1
+            n_labeled += sum(is_stop)
 
         # Single-route compatibility: the first track's path and stop timing.
         self.path = self.tracks[0].path
@@ -194,8 +200,12 @@ class MapScene:
         taken = {self.depot_cell} | {c for t in self.tracks for c in t.stop_cells}
         placed: Dict[Tuple[int, int], Tuple[str, int, int]] = {}
         for ti, track in enumerate(self.tracks):
-            for i, (r, c) in enumerate(track.stop_cells[1:], start=1):
-                text = str(i)
+            number = 0
+            for i, (r, c) in enumerate(track.stop_cells):
+                if not track.is_stop[i]:
+                    continue
+                number += 1
+                text = str(number)
                 for start in (c + 1, c - len(text)):
                     cells = [(r, start + k) for k in range(len(text))]
                     if all(0 <= cc < self.cols and (rr, cc) not in taken for rr, cc in cells):
@@ -224,16 +234,16 @@ class MapScene:
                     route_bits[r][c] |= _BRAILLE_BITS[y % 4][x % 2]
                     if owner[r][c] < 0:
                         owner[r][c] = ti
-            reached = sum(1 for at in track.reached_at[:len(track.stop_cells)] if at < n)
-            reached_by_track.append(reached)
+            reached_by_track.append(n)
             if n < length:
                 marks[self._cell(track.path[n - 1])] = ("◆", HEAD_STYLE)
-        for cell, (ch, ti, stop_i) in self.labels.items():
-            if stop_i < reached_by_track[ti]:
+        for cell, (ch, ti, point) in self.labels.items():
+            if self.tracks[ti].reached_at[point] < reached_by_track[ti]:
                 marks[cell] = (ch, self.tracks[ti].label_style)  # labels draw over the moving heads
         for ti, track in enumerate(self.tracks):
-            for i in range(1, reached_by_track[ti]):
-                marks[track.stop_cells[i]] = ("●", track.stop_style)  # stops draw over the heads
+            for i, cell in enumerate(track.stop_cells):
+                if track.is_stop[i] and track.reached_at[i] < reached_by_track[ti]:
+                    marks[cell] = ("●", track.stop_style)  # stops draw over the heads
         marks[self.depot_cell] = ("■", DEPOT_STYLE)
 
         out = Text()

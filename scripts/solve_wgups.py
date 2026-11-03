@@ -12,7 +12,10 @@ Every special note in the package file is turned into a routekit rule:
     "Wrong address listed" (package 9)  -> corrected to 410 S State St, ready 10:20 AM
     "10:30 AM" / "9:00 AM" deadlines    -> latest = deadline
 
-Fleet: 3 trucks x 16 packages, 18 mph, leaving the hub at 8:00 AM.
+Fleet: 3 trucks x 16 packages, 2 drivers, 18 mph, leaving the hub at 8:00 AM.
+Trucks may return to the hub and go out again, and a driver who comes back can
+take another truck, exactly as in the C950 scenario. routekit enforces the
+two-driver limit, rather than just checking it afterward.
 
     python scripts/solve_wgups.py
 """
@@ -105,6 +108,17 @@ def check(solution: FleetSolution, stops: List[Stop], fleet: Fleet) -> List[str]
     for g, trucks in groups.items():
         if len(trucks) > 1:
             problems.append(f"group {g} split across trucks {sorted(trucks)}")
+    by_truck: Dict[int, list] = {}
+    for t in solution.trips:
+        if t.stops:
+            by_truck.setdefault(t.truck, []).append(t)
+    for truck, trips in by_truck.items():
+        trips.sort(key=lambda t: t.depart)
+        for a, b in zip(trips, trips[1:]):
+            if b.depart < a.finish + fleet.reload - 1e-6:
+                problems.append(f"truck {truck} trip {b.trip} leaves before trip {a.trip} is back")
+    if drivers_needed(solution) > fleet.driver_count:
+        problems.append(f"{drivers_needed(solution)} trucks out at once; only {fleet.driver_count} drivers")
     for t in solution.trips:
         if fleet.capacity and t.load > fleet.capacity:
             problems.append(f"truck {t.truck} over capacity ({t.load:g})")
@@ -133,14 +147,12 @@ def drivers_needed(solution: FleetSolution) -> int:
 def main() -> int:
     console = Console()
     stops, d, loc = load_wgups()
-    fleet = Fleet(trucks=3, capacity=16, start=8 * 60, mph=18)
+    fleet = Fleet(trucks=3, capacity=16, start=8 * 60, mph=18, trips=2, drivers=2)
     sol = solve_fleet(d, stops, fleet)
     problems = check(sol, stops, fleet)
-    if drivers_needed(sol) > 2:
-        problems.append(f"needs {drivers_needed(sol)} drivers; WGUPS has 2")
 
     console.print("[bold]WGUPS (WGU C950) solved with routekit[/bold]  "
-                  "[dim]course distance table · 3 trucks × 16 packages · 18 mph · 8:00 AM start[/dim]\n")
+                  "[dim]course distance table · 3 trucks × 16 packages · 2 drivers · 18 mph · 8:00 AM[/dim]\n")
     rules = Table.grid(padding=(0, 2))
     rules.add_column(style="dim")
     rules.add_column()
@@ -152,14 +164,13 @@ def main() -> int:
     rules.add_row("Package 9", f"address corrected to {PKG9_CORRECTED} at {PKG9_READY}")
     console.print(rules)
 
-    t = Table(title="\nTrucks", header_style="bold")
-    for col, j in (("Truck", "right"), ("Packages", "left"), ("Load", "right"), ("Leaves", "right"),
-                   ("Back", "right"), ("Miles", "right")):
+    t = Table(title="\nTrips", header_style="bold")
+    for col, j in (("Truck", "right"), ("Trip", "right"), ("Driver", "right"), ("Packages", "left"),
+                   ("Load", "right"), ("Leaves", "right"), ("Back", "right"), ("Miles", "right")):
         t.add_column(col, justify=j)
-    for trip in sol.trips:
-        if trip.stops:
-            t.add_row(str(trip.truck), " ".join(str(n) for n in trip.stops), f"{trip.load:g}/16",
-                      format_clock(trip.depart), format_clock(trip.finish), f"{trip.miles:.1f}")
+    for trip in sorted(sol.used, key=lambda tr: tr.depart):
+        t.add_row(str(trip.truck), str(trip.trip), str(trip.driver), " ".join(str(n) for n in trip.stops),
+                  f"{trip.load:g}/16", format_clock(trip.depart), format_clock(trip.finish), f"{trip.miles:.1f}")
     console.print(t)
 
     deadline_pkgs = [(n, a) for tr in sol.trips for n, a in zip(tr.stops, tr.arrivals) if stops[n].latest]
@@ -169,8 +180,8 @@ def main() -> int:
                   f"([bold]{no_return:.1f}[/bold] without return legs)")
     console.print(f"Original C950 solution: {C950_MILES:.0f} miles, counted without return legs, "
                   f"and honoring only the package 9 note")
-    console.print(f"Drivers needed: {drivers_needed(sol)} (at most this many trucks are out at once; "
-                  f"WGUPS has 2)")
+    console.print(f"Drivers: at most {drivers_needed(sol)} trucks out at once (limit enforced: "
+                  f"{fleet.driver_count}); {sol.trip_count} trips on {sol.trucks_used} trucks")
     console.print(f"Deadlines: all {len(deadline_pkgs)} met, tightest with {worst:.0f} min to spare")
     console.print(f"Local search: {sol.initial_miles:.1f} → {sol.miles:.1f} miles "
                   f"({', '.join(f'{v} {k}' for k, v in sol.moves.items())})")

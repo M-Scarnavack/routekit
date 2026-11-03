@@ -42,7 +42,7 @@ class Stop:
     ready: Optional[int] = None     # when the shipment is available at the depot
     service: Optional[float] = None  # minutes at the stop (None = fleet default)
     truck: Optional[int] = None     # must ride on this truck (1-based)
-    group: Optional[str] = None     # stops sharing a group ride the same truck
+    group: Optional[str] = None     # stops sharing a group ride the same trip
 
     @property
     def located(self) -> bool:

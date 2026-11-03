@@ -23,7 +23,7 @@ from routekit.render import (failures_table, fleet_stops_table, fleet_summary_pa
                              map_panel, stops_table, summary_panel, trucks_table, unassigned_table)
 from routekit.solver import distance_matrix, nearest_neighbor, route_length, two_opt  # noqa: E402
 from routekit.stops import Stop, StopFileError, format_clock, load_stops, parse_clock, save_route  # noqa: E402
-from routekit.vrp import Fleet, FleetProblem, FleetSolution  # noqa: E402
+from routekit.vrp import Fleet, FleetProblem, FleetSolution  # noqa: E402,F401
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,6 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
     fleet.add_argument("--end", metavar="TIME", help="Trucks must be back by this time.")
     fleet.add_argument("--service", type=float, default=0.0, metavar="MIN",
                        help="Minutes spent at each stop (default 0; a 'service' column overrides).")
+    fleet.add_argument("--trips", type=int, default=1, metavar="N",
+                       help="Max trips per truck: a truck can come back, reload, and go out again (default 1).")
+    fleet.add_argument("--drivers", type=int, metavar="N",
+                       help="Drivers available; at most this many trucks are out at once. "
+                            "Drivers can switch trucks at the depot. Default: one per truck.")
+    fleet.add_argument("--reload", type=float, default=0.0, metavar="MIN",
+                       help="Minutes at the depot between a truck's trips (default 0).")
     return p
 
 
@@ -141,11 +148,13 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         return 2
-    if args.trucks < 1:
-        console.print("[red]Error:[/red] --trucks must be at least 1.")
-        return 2
+    for flag, value in (("--trucks", args.trucks), ("--trips", args.trips), ("--drivers", args.drivers)):
+        if value is not None and value < 1:
+            console.print(f"[red]Error:[/red] {flag} must be at least 1.")
+            return 2
     fleet_mode = args.trucks > 1 or args.capacity is not None or args.end is not None \
-        or args.service > 0 or any(s.constrained or s.service for s in stops)
+        or args.service > 0 or args.trips > 1 or args.drivers is not None or args.reload > 0 \
+        or any(s.constrained or s.service for s in stops)
     if fleet_mode and args.one_way:
         console.print("[red]Error:[/red] --one-way isn't supported for fleet plans yet; trucks return to the depot.")
         return 2
@@ -212,34 +221,41 @@ def plan(args: argparse.Namespace, console: Console) -> int:
 def plan_fleet(args, console: Console, located: List[Stop], d, failed: List[Stop],
                start: float, end: Optional[float]) -> int:
     capacity, balanced = args.capacity, False
-    if capacity is None and args.trucks > 1 and not any(s.constrained for s in located[1:]):
+    if capacity is None and args.trucks > 1 and args.trips == 1 and not any(s.constrained for s in located[1:]):
         capacity = math.ceil(sum(s.demand for s in located[1:]) / args.trucks)
         balanced = True
-    fleet = Fleet(trucks=args.trucks, capacity=capacity, start=start, end=end, mph=args.mph, service=args.service)
+    if args.trips > 1 and capacity is None:
+        console.print("[yellow]Note:[/yellow] --trips only matters with a --capacity (or time rules); "
+                      "without one, every truck can carry everything in one trip.")
+    drivers = args.drivers if args.drivers is not None and args.drivers < args.trucks else None
+    fleet = Fleet(trucks=args.trucks, capacity=capacity, start=start, end=end, mph=args.mph, service=args.service,
+                  trips=args.trips, drivers=drivers, reload=args.reload)
     problem = FleetProblem(d, located, fleet)
     with console.status("Planning trucks…"):
-        if args.no_optimize:
-            routes, unassigned = problem.construct()
-            trips = [problem.plan(r, t) for t, r in enumerate(routes)]
-            initial = sum(t.miles for t in trips)
-            sol = FleetSolution(trips, sorted(unassigned), initial, initial)
-        else:
-            sol = problem.solve()
+        sol = problem.solve(optimize=not args.no_optimize)
 
     console.print(fleet_summary_panel(sol, fleet, located, not args.no_optimize, len(failed), balanced))
-    used = [t for t in sol.trips if t.stops]
+    used = sol.used
     if not args.no_map and used:
         width = max(30, min(console.width - 4, 100))
         depot = located[0]
-        routes = [[depot] + [located[n] for n in t.stops] + [depot] for t in used]
-        scene = MapScene(routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels,
-                         names=[f"Truck {t.truck}" for t in used])
+        by_truck: dict = {}
+        for t in sorted(used, key=lambda t: (t.truck, t.trip)):
+            by_truck.setdefault(t.truck, []).append(t)
+        routes, names = [], []
+        for truck, trips in by_truck.items():
+            route = [depot]
+            for t in trips:
+                route += [located[n] for n in t.stops] + [depot]
+            routes.append(route)
+            names.append(f"Truck {truck}" + (f" ({len(trips)} trips)" if len(trips) > 1 else ""))
+        scene = MapScene(routes, cols=width, basemap=not args.no_basemap, labels=not args.no_labels, names=names)
         if args.no_animate or not console.is_terminal:
             console.print(map_panel(scene))
         else:
             animate(scene, console, n_stops=len(located))
     console.print(trucks_table(sol, fleet))
-    console.print(fleet_stops_table(sol, located, d))
+    console.print(fleet_stops_table(sol, located, d, fleet))
     for extra in (unassigned_table(sol, located), failures_table(failed)):
         if extra:
             console.print(extra)
@@ -254,21 +270,20 @@ def save_fleet(path: Path, sol: FleetSolution, located: List[Stop], d) -> None:
 
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["truck", "order", "name", "address", "lat", "lon", "arrives", "deadline",
-                    "leg_miles", "truck_miles"])
-        for tr in sol.trips:
-            if not tr.stops:
-                continue
+        w.writerow(["truck", "trip", "driver", "order", "name", "address", "lat", "lon", "departs", "arrives",
+                    "deadline", "leg_miles", "trip_miles"])
+        for tr in sorted(sol.used, key=lambda t: (t.truck, t.trip)):
             prev, total = 0, 0.0
             for k, (n, arr) in enumerate(zip(tr.stops, tr.arrivals), start=1):
                 s = located[n]
                 total += d[prev][n]
-                w.writerow([tr.truck, k, s.name, s.address, f"{s.lat:.6f}", f"{s.lon:.6f}", format_clock(arr),
-                            format_clock(s.latest), f"{d[prev][n]:.2f}", f"{total:.2f}"])
+                w.writerow([tr.truck, tr.trip, tr.driver or "", k, s.name, s.address, f"{s.lat:.6f}",
+                            f"{s.lon:.6f}", format_clock(tr.depart), format_clock(arr), format_clock(s.latest),
+                            f"{d[prev][n]:.2f}", f"{total:.2f}"])
                 prev = n
         for n in sol.unassigned:
             s = located[n]
-            w.writerow(["", "", s.name, s.address, f"{s.lat:.6f}", f"{s.lon:.6f}", "NOT DELIVERED",
+            w.writerow(["", "", "", "", s.name, s.address, f"{s.lat:.6f}", f"{s.lon:.6f}", "", "NOT DELIVERED",
                         format_clock(s.latest), "", ""])
 
 

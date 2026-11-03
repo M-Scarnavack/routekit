@@ -174,7 +174,7 @@ def test_wgups_script_satisfies_every_c950_rule():
                          capture_output=True, text=True, cwd=ROOT, env={"COLUMNS": "120", "PATH": ""})
     assert out.returncode == 0, out.stdout + out.stderr
     assert "every rule satisfied" in out.stdout
-    assert "Drivers needed: 2" in out.stdout
+    assert "limit enforced: 2" in out.stdout
 
 
 # -- fleet map ----------------------------------------------------------------
@@ -191,3 +191,110 @@ def test_fleet_map_draws_every_truck():
     assert "Truck 1" in legend and "Truck 2" in legend
     mid = scene.frame(scene.total_dots // 2).plain
     assert mid.count("◆") >= 1
+
+
+# -- multiple trips and driver limits --------------------------------------------
+
+def _verify_day(sol, stops, d, fleet):
+    """Re-check the rules that tie trips together across the day."""
+    used = sol.used
+    seen = sorted(n for t in used for n in t.stops)
+    assert sorted(seen + sol.unassigned) == list(range(1, len(stops)))
+    by_truck, by_driver = {}, {}
+    for t in used:
+        assert t.load <= fleet.capacity + 1e-9
+        ready = max([fleet.start] + [stops[n].ready for n in t.stops if stops[n].ready is not None])
+        assert t.depart >= ready - 1e-9
+        clock, prev = t.depart, 0
+        for n, arr in zip(t.stops, t.arrivals):
+            clock += d[prev][n] * 60 / fleet.mph
+            if stops[n].earliest is not None:
+                clock = max(clock, stops[n].earliest)
+            assert arr == pytest.approx(clock)
+            if stops[n].latest is not None:
+                assert arr <= stops[n].latest + 1e-6
+            clock += fleet.service if stops[n].service is None else stops[n].service
+            prev = n
+        assert t.finish == pytest.approx(clock + d[prev][0] * 60 / fleet.mph)
+        by_truck.setdefault(t.truck, []).append(t)
+        if t.driver is not None:
+            by_driver.setdefault(t.driver, []).append(t)
+        for n in t.stops:
+            if stops[n].truck is not None:
+                assert t.truck == stops[n].truck
+    for trips in by_truck.values():
+        trips.sort(key=lambda t: t.depart)
+        assert len(trips) <= fleet.trips
+        assert [t.trip for t in trips] == list(range(1, len(trips) + 1))
+        for a, b in zip(trips, trips[1:]):
+            assert b.depart >= a.finish + fleet.reload - 1e-6  # truck back (and reloaded) first
+    for trips in by_driver.values():
+        trips.sort(key=lambda t: t.depart)
+        for a, b in zip(trips, trips[1:]):
+            assert b.depart >= a.finish - 1e-6  # a driver drives one truck at a time
+    assert sol.drivers_needed <= fleet.driver_count
+    groups = {}
+    for t in used:
+        for n in t.stops:
+            if stops[n].group:
+                groups.setdefault(stops[n].group, set()).add((t.truck, t.trip))
+    assert all(len(v) == 1 for v in groups.values())
+
+
+@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("trucks,trips,drivers,reload", [(3, 2, 2, 0), (4, 3, 2, 15), (2, 3, 1, 10)])
+def test_multi_trip_driver_limited_plans_obey_every_rule(seed, trucks, trips, drivers, reload):
+    stops, d, _ = _random_problem(seed, n=24, trucks=trucks)
+    fleet = Fleet(trucks=trucks, capacity=8, start=8 * 60, mph=25, service=4,
+                  trips=trips, drivers=drivers, reload=reload)
+    sol = solve_fleet(d, stops, fleet)
+    _verify_day(sol, stops, d, fleet)
+    assert len(sol.unassigned) <= sol.initial_unassigned
+    if len(sol.unassigned) == sol.initial_unassigned:
+        assert sol.miles <= sol.initial_miles + 1e-9  # same stops delivered: never worse
+
+
+def test_extra_trips_deliver_what_one_trip_cannot():
+    stops = [Stop("Depot", "", 41.88, -87.63)] + [Stop(f"S{i}", "", 41.88 + i * 0.01, -87.63, demand=5)
+                                                  for i in range(1, 5)]
+    d = distance_matrix([(s.lat, s.lon) for s in stops])
+    one = solve_fleet(d, stops, Fleet(trucks=1, capacity=10))
+    two = solve_fleet(d, stops, Fleet(trucks=1, capacity=10, trips=2))
+    assert len(one.unassigned) == 2
+    assert not two.unassigned and two.trip_count == 2
+    first, second = sorted(two.used, key=lambda t: t.depart)
+    assert second.depart >= first.finish
+
+
+def test_single_driver_never_runs_two_trucks_at_once():
+    stops = [Stop("Depot", "", 41.88, -87.63)] + [Stop(f"S{i}", "", 41.88 + 0.02 * i, -87.63 + 0.01 * i)
+                                                  for i in range(1, 7)]
+    d = distance_matrix([(s.lat, s.lon) for s in stops])
+    fleet = Fleet(trucks=3, capacity=2, drivers=1, trips=2, mph=20)
+    sol = solve_fleet(d, stops, fleet)
+    assert not sol.unassigned
+    assert sol.drivers_needed == 1
+    _verify_day(sol, stops, d, fleet)
+
+
+def test_reload_time_delays_next_trip():
+    stops = [Stop("Depot", "", 41.88, -87.63), Stop("A", "", 41.9, -87.63, demand=1),
+             Stop("B", "", 41.86, -87.63, demand=1)]
+    d = distance_matrix([(s.lat, s.lon) for s in stops])
+    sol = solve_fleet(d, stops, Fleet(trucks=1, capacity=1, trips=2, reload=30))
+    first, second = sorted(sol.used, key=lambda t: t.depart)
+    assert second.depart == pytest.approx(first.finish + 30)
+
+
+def test_cli_trips_and_drivers(tmp_path, capsys):
+    from routekit import cli
+    out = tmp_path / "plan.csv"
+    code = cli.main(["plan", str(ROOT / "examples" / "chicago_fleet.csv"), "--trucks", "2", "--drivers", "1",
+                     "--capacity", "10", "--trips", "3", "--reload", "10", "--mph", "20", "--no-map",
+                     "-o", str(out)])
+    assert code == 0
+    text = capsys.readouterr().out
+    assert "Drivers" in text and "trip 2" in text
+    import csv as _csv
+    rows = list(_csv.DictReader(out.open()))
+    assert {"truck", "trip", "driver", "departs"} <= set(rows[0])
