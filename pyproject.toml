@@ -24,7 +24,7 @@ demo = ["pillow>=10"]
 routekit = "routekit.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/M-Scarnavack/Nearest-Neighbor-Algorithm---Logistics-Project"
+Homepage = "https://github.com/M-Scarnavack/routekit"
 
 [tool.setuptools.packages.find]
 include = ["routekit*"]

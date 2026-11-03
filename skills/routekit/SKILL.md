@@ -10,7 +10,7 @@ routekit geocodes U.S. addresses (free Census geocoder, no API key), builds rout
 ## 1. Make sure it's installed
 
 ```bash
-routekit --version || pip install "git+https://github.com/M-Scarnavack/Nearest-Neighbor-Algorithm---Logistics-Project.git"
+routekit --version || pip install "git+https://github.com/M-Scarnavack/routekit.git"
 ```
 
 Requires Python 3.9+. If `pip` installs into a different environment than the one on PATH, use `python -m pip install ...` and run it as `python -m routekit ...`.

@@ -106,7 +106,7 @@ The script independently re-checks every rule after solving, rather than trustin
 ### Install
 
 ```bash
-pip install "git+https://github.com/M-Scarnavack/Nearest-Neighbor-Algorithm---Logistics-Project.git"
+pip install "git+https://github.com/M-Scarnavack/routekit.git"
 routekit --version
 ```
 
@@ -189,8 +189,8 @@ Art Institute,111 S Michigan Ave Chicago IL 60603,2,9:00 AM,11:00 AM
 The repo includes a skill, `skills/routekit/SKILL.md`, that teaches Claude Code to install routekit, read your CSV (renaming columns if needed), pick the right options, and explain the result. Install it once:
 
 ```bash
-git clone https://github.com/M-Scarnavack/Nearest-Neighbor-Algorithm---Logistics-Project.git
-mkdir -p ~/.claude/skills && cp -R Nearest-Neighbor-Algorithm---Logistics-Project/skills/routekit ~/.claude/skills/
+git clone https://github.com/M-Scarnavack/routekit.git
+mkdir -p ~/.claude/skills && cp -R routekit/skills/routekit ~/.claude/skills/
 ```
 
 Then just ask: *"Plan routes for deliveries.csv with 3 trucks, 12 stops max each, all done by noon."*
