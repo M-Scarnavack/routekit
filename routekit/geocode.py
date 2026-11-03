@@ -131,3 +131,39 @@ def geocode_stops(
             _save_cache(path, cache)
 
     return [s for s in stops if not s.located]
+
+
+ONELINE_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+
+
+def geocode_one(address: str, offline: bool = False,
+                session: Optional[requests.Session] = None) -> Optional[Tuple[float, float, str]]:
+    """Look up one address right away: (lat, lon, matched address) or None.
+
+    Used to confirm addresses as they're typed. Shares the batch geocoder's cache.
+    """
+    path = cache_path()
+    cache = _load_cache(path)
+    key = _key(address)
+    hit = cache.get(key)
+    if hit:
+        return hit[0], hit[1], address
+    if offline:
+        return None
+    try:
+        resp = (session or requests).get(
+            ONELINE_URL,
+            params={"address": address, "benchmark": "Public_AR_Current", "format": "json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        matches = resp.json()["result"]["addressMatches"]
+    except (requests.RequestException, ValueError, KeyError) as e:
+        raise GeocodeError(f"Census geocoder request failed: {e}") from e
+    if not matches:
+        return None
+    m = matches[0]
+    lat, lon = float(m["coordinates"]["y"]), float(m["coordinates"]["x"])
+    cache[key] = [lat, lon]
+    _save_cache(path, cache)
+    return lat, lon, m.get("matchedAddress", address)

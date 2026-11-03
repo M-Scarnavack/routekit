@@ -59,7 +59,7 @@ The C950 version only works on one fixed Salt Lake City distance table, and its 
 
 | | C950 project | routekit |
 |---|---|---|
-| **Input** | 27 fixed addresses with a precomputed distance table | Any CSV of U.S. addresses, or lat/lon coordinates |
+| **Input** | 27 fixed addresses with a precomputed distance table | Addresses typed in the terminal (checked as you go), or any CSV of U.S. addresses |
 | **Locations** | Hard-coded | Geocoded with the free U.S. Census geocoder, cached for offline reuse |
 | **Algorithm** | Nearest neighbor | Nearest neighbor + **2-opt** for one truck; **cheapest feasible insertion + local search** (2-opt, relocate, swap) for fleets |
 | **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, and must-ship-together groups |
@@ -110,6 +110,30 @@ routekit --version
 Requires Python 3.9+. To work on the code instead, clone the repo and run `pip install -e ".[dev]"`.
 
 ### Use it
+
+**No CSV needed:** type the addresses. The first one is the depot.
+
+```bash
+routekit plan "1100 W Randolph St, Chicago, IL" \
+              "Willis Tower: 233 S Wacker Dr, Chicago, IL @ 10:30 AM" \
+              "1060 W Addison St, Chicago, IL"
+```
+
+Or run `routekit plan` with nothing after it. It asks for stops one at a time, **checks each address as you type it**, and offers to save them as a CSV when you're done:
+
+```text
+Depot › 1100 W Randolph St, Chicago, IL 60607
+  ✓ 1100 W RANDOLPH ST, CHICAGO, IL, 60607
+Stop 1 › Willis Tower Chicago
+✗ Couldn't find that address. Include the house number, street, city, and state...
+Stop 1 › Willis Tower: 233 S Wacker Dr, Chicago, IL @ 10:30 AM
+  ✓ 233 S WACKER DR, CHICAGO, IL, 60606  by 10:30 AM
+Stop 2 ›
+```
+
+Each typed stop can carry a label and a time: `Name: address`, `address @ 10:30 AM` for a deadline, or `address @ 9:00-11:00` for a window. You can also type `lat, lon` in place of an address. Pipe a list in with `cat stops.txt | routekit plan -`, and save typed stops for next time with `--save-stops stops.csv`.
+
+**With a CSV** (best for many stops, or for loads and package rules):
 
 ```bash
 routekit plan stops.csv                                   # best single-truck order, round trip
@@ -181,6 +205,7 @@ Distances are straight-line miles; road miles typically run 15–25% longer. Fle
 | `routekit/geocode.py` | Census batch geocoder with cache |
 | `routekit/mapview.py` | Braille map rendering and animation frames |
 | `routekit/cli.py` | `routekit plan` command |
+| `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
 | `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
 | `tests/` | 93 pytest tests, including randomized rule verification |

@@ -15,7 +15,20 @@ routekit --version || pip install "git+https://github.com/M-Scarnavack/Nearest-N
 
 Requires Python 3.9+. If `pip` installs into a different environment than the one on PATH, use `python -m pip install ...` and run it as `python -m routekit ...`.
 
-## 2. Look at the user's CSV before running anything
+## 2. No CSV? Pass the addresses directly
+
+If the user just lists addresses in chat, don't make a file; pass them as arguments. The first one is the depot:
+
+```bash
+routekit plan "1100 W Randolph St, Chicago, IL 60607" \
+              "Willis Tower: 233 S Wacker Dr, Chicago, IL @ 10:30 AM" \
+              "Art Institute: 111 S Michigan Ave, Chicago, IL @ 9:00-11:00" \
+              "41.8663, -87.6170"
+```
+
+Per stop: `Name: address` labels it, `@ TIME` is a deadline, `@ TIME-TIME` is a window, and `lat, lon` skips geocoding. For a long list, write one stop per line to a text file and run `routekit plan - < stops.txt`. Add `--save-stops stops.csv` to keep them. Don't run bare `routekit plan` from a tool call: it's the interactive prompt for humans.
+
+## 3. Have a CSV? Look at it before running anything
 
 Read the header and a few rows. routekit matches column names case-insensitively:
 
@@ -39,7 +52,7 @@ If the user's columns use other names (e.g. `Customer Address`, `Due By`), write
 
 The **first row is the depot** (start and end) unless you pass `--depot "ADDRESS"`.
 
-## 3. Run it
+## 4. Run it
 
 routekit draws an animated map only in an interactive terminal; from a tool call it prints the finished map automatically, so no extra flag is needed. Add `--no-map` if the user only wants tables.
 
@@ -65,7 +78,7 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 | `--offline` | No network; use CSV coordinates or the geocode cache |
 | `-o FILE` | Save the ordered plan (truck, order, arrival time, miles) |
 
-## 4. Read the output and report back
+## 5. Read the output and report back
 
 - **Summary panel:** total miles, the improvement from local search, trucks used, last truck back, windows met.
 - **"Could not locate"**: the Census geocoder needs a house number + street; landmark names, intersections, PO boxes, and typos fail. Tell the user which rows failed and offer to fix the addresses or add `lat`/`lon` for those rows, then re-run.

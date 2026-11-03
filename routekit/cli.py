@@ -16,6 +16,7 @@ from rich.console import Console  # noqa: E402
 from rich.live import Live  # noqa: E402
 
 from routekit import __version__  # noqa: E402
+from routekit.entry import StopTextError, collect_interactive, offer_save, parse_lines, save_stops  # noqa: E402
 from routekit.geocode import GeocodeError, geocode_stops  # noqa: E402
 from routekit.mapview import MapScene  # noqa: E402
 from routekit.render import (failures_table, fleet_stops_table, fleet_summary_panel,  # noqa: E402
@@ -33,8 +34,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"routekit {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    plan = sub.add_parser("plan", help="Optimize a route through every stop in a CSV.")
-    plan.add_argument("csv", type=Path, help="CSV with an 'address' column (or street/city/state/zip, or lat/lon).")
+    plan = sub.add_parser(
+        "plan", help="Optimize routes through a CSV of stops, or addresses you type.",
+        description="Optimize routes. Give a CSV file, or type addresses: as arguments, piped in with '-', "
+                    "or interactively (run with no stops). The first stop is the depot.",
+        epilog='Examples:\n'
+               '  routekit plan stops.csv\n'
+               '  routekit plan "1100 W Randolph St, Chicago, IL" "233 S Wacker Dr, Chicago, IL @ 10:30 AM"\n'
+               '  cat stops.txt | routekit plan -\n'
+               '  routekit plan            (asks for addresses one at a time)',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    plan.add_argument("inputs", nargs="*", metavar="STOP",
+                      help="A CSV file, or addresses ('Name: address @ 10:30 AM' and 'lat, lon' also work), "
+                           "or '-' to read one per line from stdin. Leave empty to type them interactively.")
+    plan.add_argument("--save-stops", type=Path, metavar="FILE",
+                      help="Save the stops you typed to a CSV so you can rerun them later.")
     plan.add_argument("--depot", metavar="ADDRESS",
                       help="Start (and end) address. Default: the first row of the CSV.")
     plan.add_argument("--one-way", action="store_true", help="Don't return to the depot at the end.")
@@ -84,12 +98,43 @@ def animate(scene: MapScene, console: Console, n_stops: int) -> None:
         live.update(map_panel(scene))
 
 
+def gather_stops(args: argparse.Namespace, console: Console):
+    """Stops from a CSV, typed arguments, stdin, or an interactive prompt. Returns (stops, typed)."""
+    inputs = args.inputs
+    source = "typed"
+    if len(inputs) == 1 and inputs[0] != "-" and (inputs[0].lower().endswith(".csv") or Path(inputs[0]).is_file()):
+        return load_stops(Path(inputs[0])), False
+    if inputs == ["-"] or (not inputs and not sys.stdin.isatty()):
+        source = "stdin"
+        stops = parse_lines(sys.stdin.read().splitlines())
+    elif not inputs:
+        stops = collect_interactive(console, offline=args.offline)
+        if len(stops) >= 2 and not args.save_stops:
+            offer_save(console, stops)
+    else:
+        if "-" in inputs:
+            raise StopTextError("'-' (read from stdin) can't be mixed with typed addresses")
+        stops = parse_lines(inputs, unit="stop")
+    if len(stops) + (1 if args.depot else 0) < 2:
+        if source == "stdin":
+            raise StopTextError("no stops given. Pass a CSV or addresses, pipe them in one per line, "
+                                "or run 'routekit plan' in a terminal to type them interactively")
+        raise StopTextError("need at least 2 stops: a depot (the first one) and somewhere to go")
+    return stops, True
+
+
 def plan(args: argparse.Namespace, console: Console) -> int:
     try:
-        stops = load_stops(args.csv)
-    except (OSError, StopFileError) as e:
+        stops, _typed = gather_stops(args, console)
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] no such file: {e.filename}")
+        return 2
+    except (OSError, StopFileError, StopTextError) as e:
         console.print(f"[red]Error:[/red] {e}")
         return 2
+    except KeyboardInterrupt:
+        console.print("\n[dim]Cancelled.[/dim]")
+        return 130
     try:
         start = parse_clock(args.start)
         end = parse_clock(args.end) if args.end else None
@@ -117,6 +162,10 @@ def plan(args: argparse.Namespace, console: Console) -> int:
     except GeocodeError as e:
         console.print(f"[red]Error:[/red] {e}\nTip: re-run with --offline to use cached results.")
         return 1
+
+    if args.save_stops:
+        save_stops(args.save_stops, stops)
+        console.print(f"[green]Saved {len(stops)} stops to {args.save_stops}[/green]")
 
     if failed and failed[0] is stops[0]:
         console.print(f"[red]Error:[/red] could not locate the depot: {stops[0].address!r}")
