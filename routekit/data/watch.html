@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Watch</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --ink: #1b1f24; --muted: #646d78; --line: #dde1e6;
+  --red: #c8281e; --red-bg: #fdecea; --amber: #b86e00; --amber-bg: #fff4e0;
+  --green: #1f8a4c; --blue: #3a6ea5; --grey: #8a929c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #1a1e24; --ink: #e8eaed; --muted: #9aa3ad; --line: #2c323a;
+    --red: #ff6b5e; --red-bg: #3a1714; --amber: #ffb547; --amber-bg: #33240d;
+    --green: #4cc982; --blue: #7aa7d9; --grey: #7d8590;
+  }
+  :root:not([data-theme="light"]) .leaflet-tile { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9); }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #1a1e24; --ink: #e8eaed; --muted: #9aa3ad; --line: #2c323a;
+  --red: #ff6b5e; --red-bg: #3a1714; --amber: #ffb547; --amber-bg: #33240d;
+  --green: #4cc982; --blue: #7aa7d9; --grey: #7d8590;
+}
+:root[data-theme="dark"] .leaflet-tile { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9); }
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex; flex-direction: column; }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: var(--panel);
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+.meta { color: var(--muted); font-size: 12px; }
+.counts { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.pill { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); white-space: nowrap; }
+.pill.red { background: var(--red-bg); color: var(--red); border-color: transparent; }
+.pill.amber { background: var(--amber-bg); color: var(--amber); border-color: transparent; }
+button { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--ink); cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.on { background: var(--ink); color: var(--panel); }
+
+#banner { display: none; padding: 10px 16px; background: var(--red); color: #fff; font-weight: 600; align-items: center; gap: 12px; }
+#banner.show { display: flex; animation: pulse 1.2s ease-in-out infinite; }
+#banner button { background: #fff; color: #9b1c13; border: 0; font-weight: 600; }
+@keyframes pulse { 50% { opacity: .82; } }
+#error { display: none; padding: 8px 16px; background: var(--amber-bg); color: var(--amber); font-weight: 600; }
+
+main { flex: 1; display: grid; grid-template-columns: 360px 1fr; min-height: 0; }
+aside { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+#map { min-height: 300px; }
+.section { padding: 12px 16px 4px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+
+.alert { margin: 6px 12px; padding: 10px 12px; border-radius: 8px; border-left: 4px solid; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
+.alert.critical { background: var(--red-bg); border-color: var(--red); }
+.alert.warning { background: var(--amber-bg); border-color: var(--amber); }
+.alert.acked { opacity: .55; }
+.alert b { grid-column: 1; }
+.alert .msg { grid-column: 1; }
+.alert .when { grid-column: 1; color: var(--muted); font-size: 12px; }
+.alert button { grid-column: 2; grid-row: 1 / span 3; align-self: center; }
+.none { margin: 6px 16px 10px; color: var(--muted); }
+
+.truck { padding: 10px 16px; border-top: 1px solid var(--line); cursor: pointer; display: grid; grid-template-columns: 12px 1fr auto; gap: 2px 10px; align-items: center; }
+.truck:hover { background: var(--bg); }
+.truck.sel { background: var(--bg); box-shadow: inset 3px 0 0 var(--ink); }
+.dot { width: 12px; height: 12px; border-radius: 50%; }
+.truck .name { font-weight: 600; }
+.truck .state { font-size: 12px; font-weight: 600; text-align: right; }
+.truck .detail { grid-column: 2 / span 2; color: var(--muted); font-size: 12px; }
+
+.s-breakdown { --c: var(--red); } .s-warning { --c: var(--amber); } .s-moving { --c: var(--green); }
+.s-stopped { --c: var(--blue); } .s-offline { --c: var(--grey); }
+.dot { background: var(--c); } .state { color: var(--c); }
+
+.marker { width: 30px; height: 30px; border-radius: 50%; background: var(--c); border: 3px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.45); display: grid; place-items: center; color: #fff; font: 700 10px/1 sans-serif; }
+.marker.s-breakdown { animation: ring 1s ease-out infinite; }
+@keyframes ring { 0% { box-shadow: 0 0 0 0 rgba(200,40,30,.7); } 100% { box-shadow: 0 0 0 18px rgba(200,40,30,0); } }
+.leaflet-popup-content { font: 13px/1.45 -apple-system, sans-serif; }
+
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; grid-template-rows: 45vh auto; }
+  #map { grid-row: 1; }
+  aside { grid-row: 2; border-right: 0; }
+  .counts { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Fleet Watch</h1>
+    <div class="meta" id="meta">Connecting…</div>
+  </div>
+  <div class="counts" id="counts"></div>
+  <button id="sound">🔔 Sound off</button>
+  <button id="notify">Desktop alerts</button>
+</header>
+<div id="banner"><span id="bannerText"></span><button id="bannerBtn">Show</button></div>
+<div id="error"></div>
+<main>
+  <aside>
+    <div class="section">Alerts</div>
+    <div id="alerts"></div>
+    <div class="section">Trucks</div>
+    <div id="trucks"></div>
+  </aside>
+  <div id="map"></div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const STATE_LABEL = { breakdown: "BREAKDOWN", warning: "Needs attention", offline: "No signal", stopped: "Stopped", moving: "Moving" };
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const $ = id => document.getElementById(id);
+
+const map = L.map("map", { zoomControl: true }).setView([39.5, -96], 4);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
+}).addTo(map);
+
+const markers = {}, trails = {};
+let selected = null, fitted = false, data = null;
+const seenCritical = new Set();
+let soundOn = false, audio = null;
+
+function timeAgo(iso, nowIso) {
+  if (!iso) return "never";
+  const m = (new Date(nowIso) - new Date(iso)) / 60000;
+  if (m < 1) return "just now";
+  if (m < 60) return Math.round(m) + " min ago";
+  return Math.floor(m / 60) + " h " + Math.round(m % 60) + " min ago";
+}
+
+function detail(t, now) {
+  const bits = [];
+  if (t.lat == null) return "Waiting for first GPS report";
+  if (t.moving) bits.push(Math.round(t.speed_mph) + " mph");
+  else if (t.stopped_min != null) bits.push("stopped " + Math.round(t.stopped_min) + " min");
+  if (t.ignition === true) bits.push("engine on"); else if (t.ignition === false) bits.push("engine off");
+  if (t.battery != null) bits.push("battery " + Math.round(t.battery) + "%");
+  if (t.fuel != null) bits.push("fuel " + Math.round(t.fuel));
+  bits.push("updated " + timeAgo(t.fix_time, now));
+  return bits.join(" · ");
+}
+
+function beep() {
+  if (!soundOn) return;
+  audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+  [0, .35, .7].forEach(d => {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = 880; o.type = "square";
+    g.gain.setValueAtTime(.15, audio.currentTime + d);
+    g.gain.exponentialRampToValueAtTime(.001, audio.currentTime + d + .25);
+    o.connect(g).connect(audio.destination); o.start(audio.currentTime + d); o.stop(audio.currentTime + d + .26);
+  });
+}
+
+function notifyDesktop(a) {
+  if ("Notification" in window && Notification.permission === "granted")
+    new Notification("🚨 " + a.truck + ": " + a.message, { body: "Fleet Watch", tag: a.id });
+}
+
+async function ack(id) {
+  await fetch("/api/ack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+  load();
+}
+
+function focusTruck(id) {
+  selected = id;
+  const t = data && data.trucks.find(x => x.id === id);
+  if (t && t.lat != null) { map.setView([t.lat, t.lon], Math.max(map.getZoom(), 13)); markers[id] && markers[id].openPopup(); }
+  render();
+}
+
+function render() {
+  const d = data; if (!d) return;
+  const now = d.now;
+  $("meta").textContent = d.source + " · updated " + new Date().toLocaleTimeString() + " · refreshes every " + d.poll_s + "s";
+  $("error").style.display = d.error ? "block" : "none";
+  $("error").textContent = d.error ? "⚠ " + d.error + ". Showing the last data received." : "";
+
+  const n = s => d.trucks.filter(t => t.state === s).length;
+  $("counts").innerHTML =
+    (n("breakdown") ? `<span class="pill red">${n("breakdown")} breakdown</span>` : "") +
+    (n("warning") ? `<span class="pill amber">${n("warning")} attention</span>` : "") +
+    `<span class="pill">${n("moving")} moving</span><span class="pill">${n("stopped")} stopped</span>` +
+    (n("offline") ? `<span class="pill">${n("offline")} no signal</span>` : "");
+
+  // alerts
+  const open = d.alerts.filter(a => !a.acked);
+  $("alerts").innerHTML = d.alerts.length ? d.alerts.map(a => `
+    <div class="alert ${a.severity} ${a.acked ? "acked" : ""}">
+      <b>${esc(a.truck)}</b>
+      <span class="msg">${esc(a.message)}</span>
+      <span class="when">since ${timeAgo(a.since, now)}${a.acked ? " · acknowledged" : ""}</span>
+      ${a.acked ? "" : `<button data-ack="${esc(a.id)}">Acknowledge</button>`}
+    </div>`).join("") : `<div class="none">All clear. No problems right now.</div>`;
+
+  // banner + sound for new critical alerts
+  const crit = open.filter(a => a.severity === "critical");
+  const fresh = crit.filter(a => !seenCritical.has(a.id));
+  fresh.forEach(a => { seenCritical.add(a.id); notifyDesktop(a); });
+  if (fresh.length) beep();
+  const critTrucks = [...new Set(crit.map(a => a.truck))];
+  $("banner").classList.toggle("show", crit.length > 0);
+  if (crit.length) $("bannerText").textContent = "🚨 " + (critTrucks.length === 1
+    ? critTrucks[0] + ": " + crit.map(a => a.message).join(" · ")
+    : critTrucks.length + " trucks need help: " + critTrucks.join(", "));
+  $("bannerBtn").onclick = () => crit[0] && focusTruck(crit[0].truck_id);
+  document.title = crit.length ? `(${critTrucks.length}) 🚨 BREAKDOWN · Fleet Watch` : "Fleet Watch";
+
+  // truck list
+  $("trucks").innerHTML = d.trucks.map(t => `
+    <div class="truck s-${t.state} ${selected === t.id ? "sel" : ""}" data-id="${esc(t.id)}">
+      <span class="dot"></span><span class="name">${esc(t.name)}</span><span class="state">${STATE_LABEL[t.state]}</span>
+      <span class="detail">${esc(detail(t, now))}</span>
+    </div>`).join("") || `<div class="none">No trucks yet. Add devices in Traccar.</div>`;
+
+  // map
+  const pts = [];
+  d.trucks.forEach(t => {
+    if (t.lat == null) return;
+    const ll = [t.lat, t.lon]; pts.push(ll);
+    const short = (t.name.match(/\d+/) || [t.name.slice(0, 3)])[0].slice(-3);
+    const icon = L.divIcon({ className: "", iconSize: [30, 30], iconAnchor: [15, 15],
+      html: `<div class="marker s-${t.state}">${esc(short)}</div>` });
+    const mine = d.alerts.filter(a => a.truck_id === t.id && !a.acked);
+    const popup = `<b>${esc(t.name)}</b>: ${STATE_LABEL[t.state]}<br>${esc(detail(t, now))}` +
+      (t.address ? `<br>${esc(t.address)}` : "") +
+      mine.map(a => `<br><span style="color:${a.severity === "critical" ? "var(--red)" : "var(--amber)"}">● ${esc(a.message)}</span>`).join("") +
+      (t.phone ? `<br><a href="tel:${esc(t.phone)}">Call driver</a>` : "") +
+      `<br><a target="_blank" rel="noopener" href="https://www.google.com/maps?q=${t.lat},${t.lon}">Open in Google Maps</a>`;
+    if (!markers[t.id]) {
+      markers[t.id] = L.marker(ll, { icon }).addTo(map).bindPopup(popup);
+      markers[t.id].on("click", () => { selected = t.id; render(); });
+      trails[t.id] = L.polyline([ll], { color: "#888", weight: 2, opacity: .6, dashArray: "4 4" }).addTo(map);
+    } else {
+      markers[t.id].setLatLng(ll).setIcon(icon).setPopupContent(popup);
+      const tr = trails[t.id].getLatLngs(), last = tr[tr.length - 1];
+      if (!last || last.lat !== t.lat || last.lng !== t.lon) { tr.push(L.latLng(ll)); if (tr.length > 200) tr.shift(); trails[t.id].setLatLngs(tr); }
+    }
+  });
+  if (!fitted && pts.length) { map.fitBounds(pts, { padding: [50, 50], maxZoom: 13 }); fitted = true; }
+}
+
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-ack]"); if (a) { e.stopPropagation(); return ack(a.dataset.ack); }
+  const t = e.target.closest(".truck"); if (t) focusTruck(t.dataset.id);
+});
+$("sound").onclick = () => {
+  soundOn = !soundOn;
+  $("sound").textContent = soundOn ? "🔔 Sound on" : "🔔 Sound off";
+  $("sound").classList.toggle("on", soundOn);
+  if (soundOn) { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); }
+};
+$("notify").onclick = async () => {
+  if (!("Notification" in window)) return;
+  const p = await Notification.requestPermission();
+  $("notify").textContent = p === "granted" ? "Desktop alerts on" : "Desktop alerts blocked";
+  $("notify").classList.toggle("on", p === "granted");
+};
+if ("Notification" in window && Notification.permission === "granted") { $("notify").textContent = "Desktop alerts on"; $("notify").classList.add("on"); }
+
+let timer;
+async function load() {
+  clearTimeout(timer);
+  try {
+    const r = await fetch("/api/fleet", { cache: "no-store" });
+    data = await r.json();
+    render();
+  } catch (e) {
+    $("error").style.display = "block";
+    $("error").textContent = "⚠ Lost connection to fleetwatch. Is it still running in the terminal?";
+  }
+  timer = setTimeout(load, ((data && data.poll_s) || 15) * 1000);
+}
+load();
+</script>
+</body>
+</html>

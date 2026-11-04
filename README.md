@@ -127,6 +127,7 @@ The script independently re-checks every rule after solving, rather than trustin
   ![routekit relief plan for Hurricane Isaias: three trucks to 15 declared Florida counties, red-ringed stops in declared areas](https://raw.githubusercontent.com/M-Scarnavack/routekit/main/docs/relief-map.jpg)
 
 - **Live truck locations (Traccar).** `routekit trucks` shows where every truck is: GPS position, speed, heading, and how fresh the fix is. It reads from [Traccar](https://www.traccar.org), free open-source fleet tracking (a GPS server plus a free driver phone app, or any of hundreds of GPS devices). `routekit plan … --start-at-truck "Truck 2"` plans a route from a truck's current position.
+- **Live dispatcher dashboard with breakdown alerts.** `routekit watch` opens a browser dashboard of every truck on a map that refreshes itself, with problem trucks sorted to the top. It flags breakdowns in red (driver SOS; fault, accident, or tow alarms; engine fault codes; stopped past 45 minutes) and warnings in amber (stopped 20+ minutes, no GPS signal, low battery). A red alert flashes a banner, retitles the browser tab, and can beep and send a desktop notification. `routekit watch --demo` plays a scripted day with five simulated trucks.
 - **Agent tools (MCP server).** `routekit mcp` lets AI agents use routekit as tools: `truck_locations`, `plan_route`, `fema_disasters`, `freight_demand`, `dat_rate`, `dat_search_loads`, and `geocode_address`. A dispatcher can ask *"Where's truck 2? Send it to Gary, then Joliet by 11, then Naperville, on truck routes"* and the agent finds the truck, plans the route from its live position, and reports arrival times and toll miles.
 - **Freight demand map (FAF5).** `routekit freight` shows where U.S. truck freight picks up and its biggest lanes, from the federal Freight Analysis Framework: 2024 tonnage by origin state, destination state, and commodity. `--from IL` shows the lanes out of Illinois, `--commodity food` narrows it to one commodity, and `--html` draws a heat map.
 
@@ -265,7 +266,19 @@ routekit trucks                          # table of positions, speed, heading, f
 routekit trucks --json                   # for scripts and agents
 routekit trucks --html trucks.html       # browser map
 routekit plan stops.csv --start-at-truck "Truck 2" --truck   # route from where the truck is now
+routekit watch                           # live dispatcher dashboard with breakdown alerts
 ```
+
+**`routekit watch`** serves a dashboard at `http://127.0.0.1:8765/` that updates every 15 seconds:
+
+| Alert | Trigger |
+|---|---|
+| 🔴 Breakdown | Driver pressed SOS · tracker reports fault, accident, tow, fuel leak, or power cut · engine fault codes (OBD) · stopped longer than `--breakdown-min` (45) |
+| 🟠 Warning | Stopped longer than `--stop-min` (20) · no GPS for `--offline-min` (10) · low battery, temperature, GPS jamming, driver fatigue |
+
+SOS and alarm alerts stay up until a dispatcher clicks **Acknowledge**, because a tracker usually sends an alarm on only one position report. Stopped and no-signal alerts clear themselves when the truck moves or reports again. Turn on **Sound** and **Desktop alerts** on the page to get a beep and a notification for each new breakdown. Try it with `routekit watch --demo`: on a 20× clock, a truck breaks down, one makes a long stop, one drives into a dead zone, and a driver presses SOS.
+
+A phone running Traccar Client sends GPS only, so engine fault codes need an OBD tracker in the truck. The dashboard can't tell a long delivery from a breakdown, so set `--stop-min` and `--breakdown-min` to fit your stops. It listens on this computer only, because it shows drivers' live locations.
 
 There's no public API for an arbitrary truck's location, so positions always come from the fleet's own tracking system. Samsara, Motive, and Geotab customers get API access to their own data, and connectors for them are on the roadmap.
 
@@ -365,6 +378,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/htmlmap.py` | Interactive HTML map (Leaflet + Esri basemaps) |
 | `routekit/fema.py` | OpenFEMA declarations, NWS alerts, county lookup |
 | `routekit/tracking.py` | Live truck locations (Traccar; provider interface for more) |
+| `routekit/watch.py` / `routekit/data/watch.html` | `routekit watch` dashboard: breakdown rules, demo fleet, local web server |
 | `routekit/freight.py` | FAF5 freight demand: origins, lanes, heat-map layers |
 | `routekit/dat.py` | DAT RateView and load-search connector (unverified) |
 | `routekit/mcp_server.py` / `routekit/api.py` | MCP server for AI agents, and the structured API it calls |
@@ -372,7 +386,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
 | `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
-| `tests/` | 258 pytest tests, including randomized rule verification |
+| `tests/` | 270 pytest tests, including randomized rule verification |
 | `.github/workflows/` | Tests on every push; publish to PyPI on each GitHub release |
 
 ### Roadmap
@@ -387,6 +401,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - Truck routing (height, weight, length, hazmat) and toll reporting and avoidance via Valhalla
 - Interactive HTML map export (`--html`)
 - Live truck locations (Traccar) and `--start-at-truck`
+- Live dispatcher dashboard with breakdown alerts (`routekit watch`)
 - MCP server for AI agents (`routekit mcp`)
 - DAT load board and rate connector (`routekit dat`); still needs testing with real DAT API credentials
 - PyPI release: `pip install routekit-cli`

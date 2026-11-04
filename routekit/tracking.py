@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import base64
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -45,6 +45,8 @@ class TruckPosition:
     fix_time: Optional[datetime]   # when the GPS fix was taken (UTC)
     status: str                    # online / offline / unknown
     address: str = ""
+    phone: str = ""                # driver/device phone number, if the tracking system has one
+    attributes: dict = field(default_factory=dict)  # raw telematics: alarm, ignition, dtcs, batteryLevel, ...
 
     @property
     def age_minutes(self) -> Optional[float]:
@@ -147,7 +149,8 @@ class TraccarProvider(TrackingProvider):
                 lat=float(p["latitude"]), lon=float(p["longitude"]),
                 speed_mph=float(p.get("speed") or 0) * KNOTS_TO_MPH,  # Traccar reports knots
                 heading=p.get("course"), fix_time=_parse_time(p.get("fixTime")),
-                status=d.get("status") or "unknown", address=p.get("address") or ""))
+                status=d.get("status") or "unknown", address=p.get("address") or "",
+                phone=d.get("phone") or "", attributes=p.get("attributes") or {}))
         return sorted(out, key=lambda t: t.name.lower())
 
 
