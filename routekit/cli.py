@@ -131,6 +131,21 @@ def build_parser() -> argparse.ArgumentParser:
                     "Set ROUTEKIT_TRACCAR_URL and ROUTEKIT_TRACCAR_TOKEN (or _USER/_PASSWORD).")
     trk.add_argument("--json", action="store_true", help="Print machine-readable JSON (for scripts and agents).")
     trk.add_argument("--html", type=Path, metavar="FILE", help="Save a browser map of the trucks.")
+    wat = sub.add_parser(
+        "watch", help="Live dispatcher dashboard: every truck on a self-updating map, with breakdown alerts.",
+        description="Open a browser dashboard of every truck (Traccar), refreshed automatically. Flags "
+                    "breakdowns (SOS, fault/accident/tow alarms, engine fault codes, long stops) and warnings "
+                    "(stopped, no GPS signal, low battery). Runs on this computer only (127.0.0.1).")
+    wat.add_argument("--demo", action="store_true", help="Simulated trucks, to try it without Traccar.")
+    wat.add_argument("--port", type=int, default=8765, help="Web port (default 8765).")
+    wat.add_argument("--stop-min", type=float, default=20, metavar="MIN",
+                     help="Warn when a truck has been stopped this long (default 20).")
+    wat.add_argument("--breakdown-min", type=float, default=45, metavar="MIN",
+                     help="Flag a possible breakdown when a truck has been stopped this long (default 45).")
+    wat.add_argument("--offline-min", type=float, default=10, metavar="MIN",
+                     help="Warn when a truck hasn't reported for this long (default 10).")
+    wat.add_argument("--poll", type=float, metavar="SEC", help="Seconds between updates (default 15; demo 3).")
+    wat.add_argument("--no-open", action="store_true", help="Don't open the dashboard in a browser.")
     fr = sub.add_parser(
         "freight", help="Freight demand: where truck freight picks up and where it goes (FAF5 government data).",
         description="Annual truck freight by state from the Freight Analysis Framework (FAF5.7.1, BTS/FHWA). "
@@ -771,6 +786,35 @@ def trucks(args, console: Console) -> int:
     return 0
 
 
+def watch(args, console: Console) -> int:
+    import webbrowser
+    from routekit.watch import DemoProvider, Monitor, make_server
+    try:
+        provider = DemoProvider() if args.demo else provider_from_env()
+    except TrackingError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        console.print("[dim]To try the dashboard without a tracking system: routekit watch --demo[/dim]")
+        return 1
+    poll = args.poll or (3 if args.demo else 15)
+    monitor = Monitor(provider, args.stop_min, args.breakdown_min, args.offline_min, cache_s=max(1.0, poll - 1))
+    try:
+        server = make_server(monitor, port=args.port, poll_s=poll)
+    except OSError as e:
+        console.print(f"[red]Error:[/red] can't use port {args.port} ({e.strerror}). Try --port 8766.")
+        return 1
+    url = f"http://127.0.0.1:{args.port}/"
+    console.print(f"[bold]routekit watch[/bold] · {provider.name} · [link={url}]{url}[/link]  [dim](Ctrl+C to stop)[/dim]")
+    if not args.no_open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("stopped")
+    finally:
+        server.server_close()
+    return 0
+
+
 def freight_report(args) -> dict:
     """Structured freight-demand result (also used by the MCP tool)."""
     d = fr_data()
@@ -1040,6 +1084,8 @@ def main(argv: Optional[List[str]] = None, console: Optional[Console] = None) ->
         return disasters(args, console)
     if args.command == "trucks":
         return trucks(args, console)
+    if args.command == "watch":
+        return watch(args, console)
     if args.command == "freight":
         return freight(args, console)
     if args.command == "dat":

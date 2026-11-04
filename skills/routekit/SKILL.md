@@ -97,6 +97,7 @@ routekit plan stops.csv --trucks 3 --capacity 14 --start 8:30 --mph 20 --service
 ## Live trucks (Traccar)
 
 - If `ROUTEKIT_TRACCAR_URL` is set, `routekit trucks --json` gives every truck's position, speed, heading, and `age_minutes`. Treat fixes older than ~30 minutes as stale, and say so.
+- For a dispatcher who wants to *watch* the fleet live and be alerted to breakdowns, suggest `routekit watch` (a self-updating browser dashboard; `--demo` to try it). It's a long-running server, so tell the user to run it in their own terminal rather than starting it yourself.
 - To reroute a truck from where it is now: `routekit plan "stop" "stop" … --start-at-truck "Truck 2"` (one way). Add `--truck` for truck-legal roads.
 - If the routekit MCP server is connected, prefer its tools (`truck_locations`, `plan_route`, `fema_disasters`, `geocode_address`) over shelling out. They return structured data.
 

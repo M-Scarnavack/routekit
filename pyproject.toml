@@ -50,7 +50,7 @@ Issues = "https://github.com/M-Scarnavack/routekit/issues"
 include = ["routekit*"]
 
 [tool.setuptools.package-data]
-routekit = ["data/*.json"]
+routekit = ["data/*.json", "data/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
