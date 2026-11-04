@@ -1,3 +1,3 @@
 """routekit: plan delivery routes from a CSV of US addresses, right in your terminal."""
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
