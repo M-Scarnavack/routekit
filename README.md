@@ -72,7 +72,7 @@ The C950 version only works on one fixed Salt Lake City distance table, and its 
 | **Truck loading** | By hand, by package ID | Automatic, under capacity, deadlines, time windows, ready times, truck pins, must-ship-together groups, pickup-and-delivery shipments, multiple trips per truck, and a driver limit |
 | **Roads** | Distance table | Straight-line, real road miles (OSRM), or truck-legal roads with toll miles (Valhalla) |
 | **Output** | Text menu | Animated terminal map (one color per truck), interactive HTML map, schedules, and CSV export |
-| **Packaging** | Single script | On PyPI (`pip install routekit-cli`), 258 automated tests on Python 3.9–3.13, an MCP server for AI agents, and a Claude Code skill |
+| **Packaging** | Single script | On PyPI (`pip install routekit-cli`), 276 automated tests on Python 3.9–3.13, a Solomon VRPTW benchmark checked in CI, an MCP server for AI agents, and a Claude Code skill |
 
 ### Head-to-head: the original C950 problem, re-solved by routekit
 
@@ -102,6 +102,33 @@ python scripts/solve_wgups.py
 ```
 
 The script independently re-checks every rule after solving, rather than trusting the solver.
+
+### How good are the plans? The Solomon benchmark
+
+Beating my own class solution is one thing. To measure routekit against the field, `scripts/bench.py` runs the fleet solver on the **56 Solomon instances**, the standard test set for routing with time windows since 1987. Each has 100 customers, truck capacities, delivery windows, and service times, and researchers have published a best-known solution for every one ([SINTEF's table](https://www.sintef.no/projectweb/top/vrptw/)).
+
+| Class | Instances | What it tests | Avg gap to best known | Trucks (best known) |
+|---|---|---|---|---|
+| C1 | 9 | Clustered customers, tight windows | +32.0% | 101 (90) |
+| C2 | 8 | Clustered, long routes | +11.8% | 29 (24) |
+| R1 | 12 | Random locations, tight windows | +12.9% | 177 (143) |
+| R2 | 11 | Random, long routes | +15.3% | 41 (30) |
+| RC1 | 8 | Mixed, tight windows | +17.8% | 121 (92) |
+| RC2 | 8 | Mixed, long routes | +21.5% | 35 (26) |
+| **All** | **56** | | **+18.2%** | **504 (405)** |
+
+**Every one of the 56 plans is valid**, re-checked from the instance file alone: each customer served exactly once, no truck over capacity, every window met, every truck back before the depot closes. routekit **matches the best known exactly on C201 and C208**, and is within 5% on C205, R102, R207, and RC101. All 56 solve in under a minute total (2.3 s at most for one instance).
+
+The gap is the honest cost of a fast construction-plus-local-search heuristic: the best-known results come from metaheuristics that run for minutes or hours per instance. The research results also minimize trucks first and distance second, while routekit minimizes distance with the trucks it's given, so it tends to use a few more trucks. Closing this gap is now measurable, which is the point.
+
+```bash
+python scripts/bench.py                       # all 56 instances
+python scripts/bench.py --quick               # one per class
+python scripts/bench.py r1 c201               # a class, or single instances
+python scripts/bench.py --baseline benchmarks/baseline.json   # exit 1 on a regression
+```
+
+**CI guards it.** On every push, GitHub Actions solves all 56 instances and fails the build if any plan breaks a rule, uses more trucks, or drives more than 0.5% farther than the saved results in `benchmarks/baseline.json`. The solver is deterministic, so results are identical run to run (checked on Python 3.9 and 3.14). When a change makes the solver better, re-save the baseline with `--json benchmarks/baseline.json`.
 
 ### New capabilities
 
@@ -385,9 +412,10 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 | `routekit/cli.py` | `routekit plan` command |
 | `routekit/entry.py` | Typed and interactive stop entry |
 | `skills/routekit/` | Claude Code skill |
-| `scripts/` | WGUPS head-to-head, basemap builder, demo-video renderer |
-| `tests/` | 270 pytest tests, including randomized rule verification |
-| `.github/workflows/` | Tests on every push; publish to PyPI on each GitHub release |
+| `scripts/` | WGUPS head-to-head, Solomon benchmark (`bench.py`), basemap builder, demo-video renderer |
+| `benchmarks/` | The 56 Solomon VRPTW instances, best-known values, and the saved baseline CI compares against |
+| `tests/` | 276 pytest tests, including randomized rule verification |
+| `.github/workflows/` | Tests and the Solomon benchmark on every push; publish to PyPI on each GitHub release |
 
 ### Roadmap
 
@@ -408,6 +436,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - FEMA relief mode: `routekit disasters`, `--fema`, `--fema-within`, with NWS alerts on both maps
 - Freight-demand map from FAF5 (`routekit freight`)
 - Pickup-and-delivery shipments (A → B on the same trip, load tracked along the route)
+- Solomon VRPTW benchmark harness (`scripts/bench.py`), with regression checks in CI
 
 **Next**
 
@@ -415,6 +444,7 @@ Without `--roads`, distances are straight-line miles, and road miles run longer 
 - Driver hours-of-service limits (11-hour driving, 14-hour window, 30-minute break)
 - Multiple depots (trucks starting from different yards in one plan)
 - Maximum ride time per shipment (today routekit minimizes miles, so freight can ride longer than needed)
+- Close the gap to best-known Solomon results (currently +18.2% on average): fewer trucks, and a metaheuristic on top of local search
 
 ### Development
 
